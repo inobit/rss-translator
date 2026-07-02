@@ -38,7 +38,9 @@ export async function handleScheduled(
 
     logger.info(`Pre-caching articles for: ${source.id}`);
     try {
-      const resp = await fetch(source.url);
+      const resp = await fetch(source.url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+      });
       if (!resp.ok) {
         logger.error(`Failed to fetch RSS for ${source.id}: ${resp.status}`);
         continue;

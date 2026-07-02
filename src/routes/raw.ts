@@ -42,7 +42,7 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     if (!translateBody) {
       // 不翻译，直接代理原文
       const resp = await fetch(decodedUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RSS-Translator/1.0)' },
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
       });
       return new Response(resp.body, {
         headers: { 'Content-Type': resp.headers.get('Content-Type') || 'text/html' },

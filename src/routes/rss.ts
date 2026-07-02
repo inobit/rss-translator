@@ -54,7 +54,9 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     // 抓取原始 RSS
     logger.info(`Fetching RSS: ${source.url}`);
-    const resp = await fetch(source.url);
+    const resp = await fetch(source.url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+    });
     if (!resp.ok) {
       logger.error(`Failed to fetch RSS: ${resp.status}`);
       return c.json({ error: `Failed to fetch RSS: ${resp.status}` }, 502);

@@ -17,6 +17,7 @@ export type ContentBlock =
 export interface ArticleData {
   title: string;
   author?: string;
+  authorUrl?: string;
   role?: string;
   date?: string;
   summary?: string;
@@ -27,7 +28,7 @@ export interface ArticleData {
 
 /** 每个 source 的文章提取器 */
 interface SourceExtractor {
-  extract($: ReturnType<typeof cheerio.load>): ArticleData;
+  extract($: ReturnType<typeof cheerio.load>, rawHtml?: string): ArticleData;
 }
 
 /** 默认移除元素 */
@@ -40,18 +41,55 @@ const DEFAULT_REMOVE_SELECTORS = [
 
 // ================ 通用工具函数 ================
 
-/** 从页面提取 JSON-LD 结构化数据，优先返回 NewsArticle 或 Article 类型 */
-function extractJsonLd($: ReturnType<typeof cheerio.load>): Record<string, unknown> | null {
+/** 从原始 HTML 用正则提取 JSON-LD，不依赖 cheerio（cheerio 对部分页面的 script 选择器不稳定） */
+function extractJsonLdFromRaw(html: string): Record<string, unknown> | null {
+  const ldRegex = /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  let firstValid: Record<string, unknown> | null = null;
+
+  while ((match = ldRegex.exec(html)) !== null) {
+    try {
+      const text = match[1].trim();
+      if (!text) continue;
+      const parsed = JSON.parse(text);
+
+      const items: Record<string, unknown>[] = Array.isArray(parsed) ? parsed : [parsed];
+
+      for (const item of items) {
+        if (!firstValid) firstValid = item;
+        if (item['@type'] === 'NewsArticle' || item['@type'] === 'Article') {
+          return item;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+  return firstValid;
+}
+
+/** 从页面提取 JSON-LD，兼容正则和 cheerio 两种方式 */
+function extractJsonLd($: ReturnType<typeof cheerio.load>, rawHtml?: string): Record<string, unknown> | null {
+  // 优先用正则从原始 HTML 提取（不依赖 cheerio 的 script 选择器）
+  if (rawHtml) {
+    const result = extractJsonLdFromRaw(rawHtml);
+    if (result) return result;
+  }
+
+  // 降级：cheerio 选择器（对 BBC、SciAm 等有效）
   const scripts = $('script[type="application/ld+json"]').toArray();
   let firstValid: Record<string, unknown> | null = null;
   for (const el of scripts) {
     try {
       const text = $(el).text();
       if (!text) continue;
-      const parsed = JSON.parse(text) as Record<string, unknown>;
-      if (!firstValid) firstValid = parsed;
-      if (parsed['@type'] === 'NewsArticle' || parsed['@type'] === 'Article') {
-        return parsed;
+      const parsed = JSON.parse(text);
+      const items: Record<string, unknown>[] = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of items) {
+        if (!firstValid) firstValid = item;
+        if (item['@type'] === 'NewsArticle' || item['@type'] === 'Article') {
+          return item;
+        }
       }
     } catch {
       continue;
@@ -297,12 +335,25 @@ function extractPersonName(value: unknown): string | undefined {
   return (value[0] as { name?: string })?.name || undefined;
 }
 
+/** 从 JSON-LD author 字段提取个人主页 URL（sameAs 或 url） */
+function extractPersonUrl(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (!Array.isArray(value)) {
+    return (value as { sameAs?: string; url?: string })?.sameAs
+      || (value as { sameAs?: string; url?: string })?.url
+      || undefined;
+  }
+  return (value[0] as { sameAs?: string; url?: string })?.sameAs
+    || (value[0] as { sameAs?: string; url?: string })?.url
+    || undefined;
+}
+
 /** 从 meta 标签提取内容 */
 function extractMeta($: ReturnType<typeof cheerio.load>, selector: string): string | undefined {
   return $(selector).attr('content')?.trim() || undefined;
 }
 
-function sciamExtract($: ReturnType<typeof cheerio.load>): ArticleData {
+function sciamExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
   // 移除 SciAm 特有的募捐/订阅广告和转载声明
   $('[class*="subscriptionPlea"], [class*="donation"], [class*="inlineNewsletter"]').remove();
 
@@ -365,9 +416,103 @@ function sciamExtract($: ReturnType<typeof cheerio.load>): ArticleData {
 }
 
 
+// ================ Guardian 提取器 ================
+
+function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): ArticleData {
+  // 移除 Guardian 特有噪音：sign-in-gate、newsletter、rich link
+  $('#sign-in-gate').remove();
+  $('figure[data-spacefinder-type*="NewsletterSignup"]').remove();
+  $('figure[data-spacefinder-type*="RichLink"]').remove();
+  $('gu-island').remove();
+
+  const jsonLd = extractJsonLd($, rawHtml);
+
+  const title = (jsonLd?.headline as string)
+    || $('h1').first().text().trim()
+    || fallbackTitle($);
+
+  const author = extractPersonName(jsonLd?.author)
+    || extractMeta($, 'meta[property="article:author"]')
+    || undefined;
+
+  const authorUrl = extractPersonUrl(jsonLd?.author)
+    || undefined;
+
+  const date = (jsonLd?.datePublished as string)
+    || extractMeta($, 'meta[property="article:published_time"]')
+    || undefined;
+
+  const summary = (jsonLd?.description as string)
+    || extractMeta($, 'meta[name="description"]')
+    || extractMeta($, 'meta[property="og:description"]')
+    || undefined;
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // 提取主图（Guardian 使用 picture 元素包裹 lead image）
+  const $mainPicture = $('picture').first();
+  if ($mainPicture.length) {
+    const $img = $mainPicture.find('img').first();
+    const src = $img.attr('src');
+    const alt = $img.attr('alt') || '';
+    if (src) {
+      const img: ArticleImage = { src, alt };
+      images.push(img);
+      blocks.push({ type: 'image', image: img });
+    }
+  }
+
+  // 从 og:image 降级取题图
+  if (images.length === 0) {
+    const ogImg = extractMeta($, 'meta[property="og:image"]');
+    if (ogImg) {
+      images.push({ src: ogImg, alt: '' });
+      blocks.push({ type: 'image', image: { src: ogImg, alt: '' } });
+    }
+  }
+
+  // 提取正文段落（Guardian 使用 [class*="article-body"] 包裹正文）
+  const $body = $('[class*="article-body"]').first();
+  if ($body.length) {
+    $body.find('p').each((_i, el) => {
+      const text = $(el).text().trim();
+      if (text && text.length > 10) {
+        paragraphs.push(text);
+        blocks.push({ type: 'text', texts: [text] });
+      }
+    });
+
+    // 提取正文中的图片
+    $body.find('figure').each((_i, el) => {
+      const $img = $(el).find('img').first();
+      if ($img.length) {
+        const src = $img.attr('src');
+        const alt = $img.attr('alt') || '';
+        if (src && !images.some(i => i.src === src)) {
+          images.push({ src, alt });
+          blocks.push({ type: 'image', image: { src, alt } });
+        }
+      }
+    });
+  }
+
+  // 正文为空时降级为 meta 提取
+  if (blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+  }
+
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+}
+
+
 // ================ 通用提取器（降级） ================
 
-function genericExtract($: ReturnType<typeof cheerio.load>): ArticleData {
+function genericExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
   const jsonLd = extractJsonLd($);
   const title = (jsonLd?.headline as string) || fallbackTitle($);
 
@@ -395,6 +540,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'bbc-business': { extract: bbcExtract },
   'bbc': { extract: bbcExtract },
   'sciam': { extract: sciamExtract },
+  'guardian-ai': { extract: guardianExtract },
 };
 
 
@@ -410,7 +556,7 @@ async function extractArticle(html: string, sourceId?: string): Promise<ArticleD
   $(DEFAULT_REMOVE_SELECTORS.join(', ')).remove();
 
   const extractor = sourceId ? SOURCE_EXTRACTORS[sourceId] : undefined;
-  const result = extractor ? extractor.extract($) : genericExtract($);
+  const result = extractor ? extractor.extract($, html) : genericExtract($);
   return result;
 }
 
@@ -489,7 +635,13 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   let bylineHtml = '';
   if (article.author || article.role || article.date) {
     bylineHtml = '<div class="byline">';
-    if (article.author) bylineHtml += `<span class="author">${esc(article.author)}</span>`;
+    if (article.author) {
+      if (article.authorUrl) {
+        bylineHtml += `<a href="${esc(article.authorUrl)}" class="author" target="_blank" rel="noopener">${esc(article.author)}</a>`;
+      } else {
+        bylineHtml += `<span class="author">${esc(article.author)}</span>`;
+      }
+    }
     if (article.role) bylineHtml += `<span class="role">${esc(article.role)}</span>`;
     if (article.date) bylineHtml += `<time class="date">${esc(article.date)}</time>`;
     bylineHtml += '</div>';
@@ -541,10 +693,12 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   h1 { font-size: 28px; font-weight: 700; line-height: 1.25; color: #141414; margin-bottom: 16px; }
   .byline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e6e6e6; font-size: 14px; color: #545658; }
   .author { font-weight: 700; color: #141414; }
+  a.author { text-decoration: none; }
+  a.author:hover { text-decoration: underline; }
   .role { color: #545658; }
   .date { color: #8a8c8e; }
   .date::before { content: "·"; margin: 0 8px; }
-  .summary { font-size: 16px; color: #545658; line-height: 1.55; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e6e6e6; }
+  .summary { font-size: 18px; font-weight: 500; color: #242424; line-height: 1.6; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e6e6e6; }
   .article-image { margin: 24px 0; }
   .article-image img { width: 100%; height: auto; display: block; }
   .article-image figcaption { font-size: 13px; color: #545658; padding: 8px 0 0; line-height: 1.4; }
@@ -587,7 +741,7 @@ export async function fetchAndTranslatePage(
 
   logger.info(`Fetching article: ${url}`);
   const resp = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RSS-Translator/1.0)' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
   });
   if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
 
@@ -610,7 +764,7 @@ export async function fetchAndExtractContent(
 ): Promise<{ title: string; content: string }> {
   const logger = createLogger(env);
   const resp = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; RSS-Translator/1.0)' },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
   });
   if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
 

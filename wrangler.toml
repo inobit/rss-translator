@@ -11,7 +11,8 @@ RSS_CONFIG = { defaults = { engine = "deepseek", max_articles_per_run = 20, targ
   { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-world", name = "BBC World", title = "BBC 国际新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/world/rss.xml" },
   { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-business", name = "BBC Business", title = "BBC 商业", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/business/rss.xml" },
   { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc", name = "BBC", title = "BBC 新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/rss.xml" },
-  { domains = ["scientificamerican.com"], engine = "deepseek", id = "sciam", name = "Scientific American", title = "科学美国人", translate = true, translate_body = true, url = "http://rss.sciam.com/ScientificAmerican-Global" }
+  { domains = ["scientificamerican.com"], engine = "deepseek", id = "sciam", name = "Scientific American", title = "科学美国人", translate = true, translate_body = true, url = "http://rss.sciam.com/ScientificAmerican-Global" },
+  { domains = ["theguardian.com"], engine = "deepseek", id = "guardian-ai", name = "The Guardian AI", title = "卫报 AI", translate = true, translate_body = true, url = "https://www.theguardian.com/technology/artificialintelligenceai/rss" }
 ] }
 LOG_LEVEL = "info"
 
