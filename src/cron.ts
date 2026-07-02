@@ -53,6 +53,13 @@ export async function handleScheduled(
         continue;
       }
 
+      // 如果 RSS 自带正文（content:encoded），正文已在 RSS 路由中内联翻译，跳过页面抓取
+      const hasContent = parsed.channel.items.some(item => item.content || item['content:encoded']);
+      if (hasContent) {
+        logger.info(`RSS already contains content, skipping pre-cache for: ${source.id}`);
+        continue;
+      }
+
       for (const item of parsed.channel.items) {
         if (cachedCount >= maxArticles) break;
         if (!item.link) continue;

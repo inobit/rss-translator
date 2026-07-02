@@ -5,12 +5,13 @@ import type { ParsedRss, ParsedRssChannel, ParsedRssItem } from '../types';
 const ATTR_PREFIX = '@_';
 
 const CDATA_KEY = '__cdata';
-const CDATA_FIELDS = new Set(['title', 'description', 'language', 'copyright', 'content', 'link']);
+const CDATA_FIELDS = new Set(['title', 'description', 'language', 'copyright', 'content', 'content:encoded', 'link']);
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: ATTR_PREFIX,
   parseTagValue: false,
+  processEntities: { enabled: true, maxTotalExpansions: 100000 },
 });
 
 const builder = new XMLBuilder({

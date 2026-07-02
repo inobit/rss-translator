@@ -92,12 +92,19 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       channelMeta.title = source.title;
     }
 
+    // 检测 RSS 是否自带正文（如 MIT 的 content:encoded）
+    const hasContent = channel.items.some(item => item.content || item['content:encoded']);
+
     // 处理翻译
     if (source.translate && channel.items.length > 0) {
       const titles = channel.items.map((item) => item.title);
       const descriptions = channel.items.map((item) => item.description);
+      const contents: string[] = [];
+      for (const item of channel.items) {
+        contents.push((item['content:encoded'] as string) ?? item.content ?? '');
+      }
 
-      const [translatedTitles, translatedDescriptions] = await Promise.all([
+      const contentTasks: Promise<string[]>[] = [
         translateTexts({
           engine: effectiveEngine,
           texts: titles,
@@ -118,7 +125,42 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
           llm: llmConfig,
           deeplx: deeplxConfig,
         }),
-      ]);
+      ];
+
+      if (hasContent) {
+        // 正文较大时，分块翻译避免 LLM 响应截断
+        const CHUNK_SIZE = 5;
+        const allTranslatedContents: string[] = new Array(contents.length).fill('');
+        for (let start = 0; start < contents.length; start += CHUNK_SIZE) {
+          const end = Math.min(start + CHUNK_SIZE, contents.length);
+          const chunk = contents.slice(start, end);
+          const hasNonEmpty = chunk.some(c => c);
+          if (!hasNonEmpty) continue;
+          const chunkResult = await translateTexts({
+            engine: effectiveEngine,
+            texts: chunk,
+            targetLang,
+            sourceLang: 'EN',
+            env: c.env,
+            prompt: '将以下 HTML 新闻正文翻译为中文。仅翻译文本内容，保留所有 HTML 标签和属性不变。使用新闻体的专业中文：',
+            llm: llmConfig,
+            deeplx: deeplxConfig,
+          });
+          for (let j = 0; j < chunkResult.length; j++) {
+            allTranslatedContents[start + j] = chunkResult[j];
+          }
+        }
+        // 替换为翻译结果
+        for (let i = 0; i < channel.items.length; i++) {
+          if (allTranslatedContents[i]) {
+            channel.items[i]['content:encoded'] = allTranslatedContents[i];
+          }
+        }
+      }
+
+      const results = await Promise.all(contentTasks);
+      const translatedTitles = results[0];
+      const translatedDescriptions = results[1];
 
       for (let i = 0; i < channel.items.length; i++) {
         channel.items[i].title = translatedTitles[i] ?? channel.items[i].title;
@@ -126,18 +168,23 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       }
     }
 
-    // 替换正文链接为代理 URL
+    // 替换正文链接为代理 URL（仅当 RSS 不自带正文时才重写，否则正文已在 RSS 里翻译）
     const token = c.req.query('token') ?? '';
     const itemsOutput = channel.items.map((item) => {
       const output: Record<string, unknown> = {
         ...item,
       };
 
-      if (!noRewrite && source.translate_body && item.link) {
+      if (!noRewrite && source.translate_body && !hasContent && item.link) {
         const encodedUrl = encodeURIComponent(item.link);
         const sourceParam = sourceId ? `&source=${encodeURIComponent(sourceId)}` : '';
         const baseUrl = new URL(c.req.url).origin;
         output.link = `${baseUrl}/raw?url=${encodedUrl}${sourceParam}&token=${encodeURIComponent(token)}`;
+      }
+
+      // 正文已内联翻译时，去掉 normalizeItem 生成的冗余 content 字段，保留 content:encoded
+      if (hasContent) {
+        delete output.content;
       }
 
       return output;
