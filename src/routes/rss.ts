@@ -64,8 +64,10 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     const xml = await resp.text();
 
+    const refreshCache = c.req.query('refresh') === '1';
+
     // hash 比对：原始 RSS 未变则返回缓存的翻译 XML
-    const rssCached = await getRssCache(c.env, cacheKey, targetLang);
+    const rssCached = refreshCache ? null : await getRssCache(c.env, cacheKey, targetLang);
     if (rssCached) {
       const currentHash = hashString(xml);
       if (rssCached.hash === currentHash) {
@@ -98,56 +100,41 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     // 处理翻译
     if (source.translate && channel.items.length > 0) {
       const titles = channel.items.map((item) => item.title);
-      const descriptions = channel.items.map((item) => item.description);
       const contents: string[] = [];
       for (const item of channel.items) {
         contents.push((item['content:encoded'] as string) ?? item.content ?? '');
       }
 
-      const contentTasks: Promise<string[]>[] = [
-        translateTexts({
-          engine: effectiveEngine,
-          texts: titles,
-          targetLang,
-          sourceLang: 'EN',
-          env: c.env,
-          prompt: config?.llm_prompt,
-          llm: llmConfig,
-          deeplx: deeplxConfig,
-        }),
-        translateTexts({
-          engine: effectiveEngine,
-          texts: descriptions,
-          targetLang,
-          sourceLang: 'EN',
-          env: c.env,
-          prompt: config?.llm_prompt,
-          llm: llmConfig,
-          deeplx: deeplxConfig,
-        }),
-      ];
+      // 翻译标题
+      const translatedTitles = await translateTexts({
+        engine: effectiveEngine,
+        texts: titles,
+        targetLang,
+        sourceLang: 'EN',
+        env: c.env,
+        prompt: config?.llm_prompt,
+        llm: llmConfig,
+        deeplx: deeplxConfig,
+      });
 
       if (hasContent) {
-        // 正文较大时，分块翻译避免 LLM 响应截断
-        const CHUNK_SIZE = 5;
         const allTranslatedContents: string[] = new Array(contents.length).fill('');
-        for (let start = 0; start < contents.length; start += CHUNK_SIZE) {
-          const end = Math.min(start + CHUNK_SIZE, contents.length);
-          const chunk = contents.slice(start, end);
-          const hasNonEmpty = chunk.some(c => c);
-          if (!hasNonEmpty) continue;
-          const chunkResult = await translateTexts({
+        for (let i = 0; i < contents.length; i++) {
+          const content = contents[i];
+          if (!content) continue;
+          // 剥离 HTML 标签，只保留纯文本发送给 LLM 翻译
+          const plainContent = content.replace(/<[^>]*>/g, '').trim();
+          const result = await translateTexts({
             engine: effectiveEngine,
-            texts: chunk,
+            texts: [plainContent],
             targetLang,
             sourceLang: 'EN',
             env: c.env,
-            prompt: '将以下 HTML 新闻正文翻译为中文。仅翻译文本内容，保留所有 HTML 标签和属性不变。使用新闻体的专业中文：',
             llm: llmConfig,
             deeplx: deeplxConfig,
           });
-          for (let j = 0; j < chunkResult.length; j++) {
-            allTranslatedContents[start + j] = chunkResult[j];
+          if (result[0]) {
+            allTranslatedContents[i] = result[0];
           }
         }
         // 替换为翻译结果
@@ -158,13 +145,8 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         }
       }
 
-      const results = await Promise.all(contentTasks);
-      const translatedTitles = results[0];
-      const translatedDescriptions = results[1];
-
       for (let i = 0; i < channel.items.length; i++) {
         channel.items[i].title = translatedTitles[i] ?? channel.items[i].title;
-        channel.items[i].description = translatedDescriptions[i] ?? channel.items[i].description;
       }
     }
 

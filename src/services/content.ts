@@ -115,6 +115,11 @@ function fallbackDate($: ReturnType<typeof cheerio.load>): string | undefined {
   return time;
 }
 
+/** 去除 HTML 标签，保留纯文本 */
+function stripHtmlTags(text: string): string {
+  return text.replace(/<[^>]*>/g, '').trim();
+}
+
 /** 英文月份名 → 中文数字 */
 const MONTH_NAMES: Record<string, string> = {
   january: '1', february: '2', march: '3', april: '4', may: '5', june: '6',
@@ -533,6 +538,164 @@ function genericExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
 }
 
 
+// ================ MIT News 提取器 ================
+
+function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
+  // 移除噪音元素
+  $('.news-article--press-inquiries').remove();
+  $('.news-article--related').remove();
+  $('.news-article--images-gallery').remove();
+
+  const title = $('h1 [itemprop="name headline"]').first().text().trim()
+    || fallbackTitle($);
+
+  const summary = $('.news-article--dek').first().text().trim() || undefined;
+
+  const author = $('.news-article--author').first().text().trim()
+    || extractMeta($, 'meta[name="author"]')
+    || undefined;
+
+  let date = $('.news-article--publication-date time[datetime]').first().attr('datetime')
+    || $('.news-article--publication-date time').first().text().trim()
+    || fallbackDate($);
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // 提取 lead image（og:image，data-src 方式加载）
+  const ogImage = $('meta[property="og:image"]').attr('content');
+  if (ogImage) {
+    const ogAlt = $('meta[property="og:image:alt"]').attr('content') || '';
+    images.push({ src: ogImage, alt: ogAlt });
+    blocks.push({ type: 'image', image: { src: ogImage, alt: ogAlt } });
+  }
+
+  // 提取正文（.news-article--content--body--inner）
+  const $body = $('.news-article--content--body--inner').first();
+  if ($body.length) {
+    // 遍历所有子元素，按顺序提取文本和图片
+    $body.children().each((_i, el) => {
+      const $el = $(el);
+
+      // inline image blocks
+      if ($el.hasClass('news-article--content-block--inline-image')) {
+        const $img = $el.find('img[loading="lazy"]').first();
+        const src = $img.attr('data-src') || $img.attr('src');
+        const alt = $img.attr('alt') || '';
+        if (src && !images.some(i => i.src === src)) {
+          // 图片描述
+          const caption = $el.find('.news-article--inline-image--caption').first().text().trim();
+          const credits = $el.find('.news-article--inline-image--credits').first().text().trim();
+          const altText = [alt, caption].filter(Boolean).join(' - ');
+          const copyright = credits || undefined;
+          const img: ArticleImage = { src, alt: altText, copyright };
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
+        }
+      }
+
+      // text blocks
+      if ($el.hasClass('paragraph--type--content-block-text')) {
+        const $pTags = $el.find('p');
+        $pTags.each((_j, pEl) => {
+          const text = $(pEl).text().trim();
+          if (text && text.length > 10) {
+            // 子标题（加粗段落）
+            const $strong = $(pEl).find('strong').first();
+            if ($strong.length && $strong.text().trim().length > 2
+              && $strong.text().trim().length < 60
+              && $(pEl).text().trim().length < 100) {
+              blocks.push({ type: 'heading', text: $strong.text().trim() });
+              return;
+            }
+            paragraphs.push(text);
+            blocks.push({ type: 'text', texts: [text] });
+          }
+        });
+      }
+    });
+  }
+
+  // 正文为空时降级
+  if (blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+    date = date || fallback.date;
+  }
+
+  return { title, author, date, summary, images, paragraphs, blocks };
+}
+
+
+// ================ The Register 提取器 ================
+
+function registerExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
+  // 移除广告、相关文章列表等噪音
+  $('.bodytext .google-ad, .bodytext .articleList').remove();
+  $('.articleFooter').remove();
+  $('[class*="paywall"]').remove();
+
+  const title = $('.articleHeader h1.headline').first().text().trim()
+    || $('h1').first().text().trim()
+    || fallbackTitle($);
+
+  const summary = $('.articleHeader .subtitle').first().text().trim() || undefined;
+
+  // author: 优先 itemprop="name"，降级 .byline .name 内文字
+  const author = $('.byline [itemprop="name"]').first().text().trim()
+    || $('.byline .name .firstname').text().trim() + ' ' + $('.byline .name .lastname').text().trim()
+    || extractMeta($, 'meta[property="article:author"]')
+    || undefined;
+
+  const authorUrl = $('.byline a[rel="author"]').first().attr('href') || undefined;
+
+  let date = $('.meta .datePublished time[datetime]').first().attr('datetime')
+    || extractMeta($, 'meta[property="article:published_time"]')
+    || fallbackDate($);
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // lead image（og:image）
+  const ogImage = $('meta[property="og:image"]').attr('content');
+  if (ogImage) {
+    const ogAlt = $('meta[property="og:image:alt"]').attr('content') || title;
+    images.push({ src: ogImage, alt: ogAlt });
+    blocks.push({ type: 'image', image: { src: ogImage, alt: ogAlt } });
+  }
+
+  // 提取正文：.bodytext 中所有 p 标签
+  const $body = $('.bodytext').first();
+  if ($body.length) {
+    $body.find('p').each((_i, el) => {
+      const $p = $(el);
+      // 跳过广告和噪音内部的 p
+      if ($p.closest('.google-ad, .articleList, .paywall').length) return;
+      const text = $p.text().trim();
+      if (text && text.length > 10) {
+        paragraphs.push(text);
+        blocks.push({ type: 'text', texts: [text] });
+      }
+    });
+  }
+
+  // 正文为空时降级
+  if (blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+    date = date || fallback.date;
+  }
+
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+}
+
+
 // ================ 注册表 ================
 
 const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
@@ -542,6 +705,8 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'sciam': { extract: sciamExtract },
   'guardian-ai': { extract: guardianExtract },
   'guardian-china': { extract: guardianExtract },
+  'mit-news': { extract: mitNewsExtract },
+  'theregister-ai': { extract: registerExtract },
 };
 
 
@@ -558,6 +723,9 @@ async function extractArticle(html: string, sourceId?: string): Promise<ArticleD
 
   const extractor = sourceId ? SOURCE_EXTRACTORS[sourceId] : undefined;
   const result = extractor ? extractor.extract($, html) : genericExtract($);
+  if (result.summary) {
+    result.summary = stripHtmlTags(result.summary);
+  }
   return result;
 }
 

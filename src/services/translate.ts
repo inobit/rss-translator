@@ -66,7 +66,7 @@ export function resolveProvider(
 const LLM_PROMPT_TEMPLATE = `将以下英文新闻内容翻译为中文。要求：
 - 使用新闻体的专业中文
 - 精确传达原意
-- 保持格式和结构
+- 只返回纯文本，不要添加任何 HTML 标签或 Markdown 格式
 
 原文：`;
 
