@@ -9,7 +9,9 @@ crons = ["*/10 * * * *"]
 [vars]
 RSS_CONFIG = { defaults = { engine = "deepseek", max_articles_per_run = 20, target_lang = "ZH" }, providers = { deeplx = { endpoint = "https://api.deeplx.org", type = "deeplx" }, deepseek = { endpoint = "https://api.deepseek.com/v1/chat/completions", model = "deepseek-v4-flash" }, nvidia = { endpoint = "https://integrate.api.nvidia.com/v1/chat/completions", model = "deepseek-v4-flash" } }, sources = [
   { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-world", name = "BBC World", title = "BBC 国际新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/world/rss.xml" },
-  { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-business", name = "BBC Business", title = "BBC 商业", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/business/rss.xml" }
+  { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-business", name = "BBC Business", title = "BBC 商业", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/business/rss.xml" },
+  { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc", name = "BBC", title = "BBC 新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/rss.xml" },
+  { domains = ["scientificamerican.com"], engine = "deepseek", id = "sciam", name = "Scientific American", title = "科学美国人", translate = true, translate_body = true, url = "http://rss.sciam.com/ScientificAmerican-Global" }
 ] }
 LOG_LEVEL = "info"
 
