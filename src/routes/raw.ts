@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
 import { fetchAndTranslatePage } from '../services/content';
-import { getConfig, getArticleCache, setArticleCache } from '../storage/kv';
+import { getConfig, getArticleCache, setArticleCache, deleteArticleCache } from '../storage/kv';
 import { resolveProvider } from '../services/translate';
 import { createLogger } from '../utils/logger';
 
@@ -72,7 +72,10 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         decodedUrl, c.env, sourceId || undefined, engine, llmConfig,
       );
 
-      // 异步写缓存（不阻塞响应）
+      // 先删旧缓存（防止配额耗尽后旧缓存残留），再异步写新缓存
+      if (refreshCache) {
+        await deleteArticleCache(c.env, decodedUrl, targetLang);
+      }
       c.executionCtx.waitUntil(
         setArticleCache(c.env, decodedUrl, targetLang, translatedHtml),
       );

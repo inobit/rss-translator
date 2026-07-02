@@ -40,7 +40,20 @@ export async function setConfig(_env: WorkerEnv, config: RssConfig): Promise<voi
   console.log(JSON.stringify(config));
 }
 
-/** 生成文章 HTML 缓存的 key */
+/** 删除文章 HTML 缓存 */
+export async function deleteArticleCache(
+  env: WorkerEnv,
+  url: string,
+  targetLang: string,
+): Promise<void> {
+  const key = articleCacheKey(url, targetLang);
+  try {
+    await env.RSS_ARTICLE_CACHE.delete(key);
+    logger.debug('Article cache deleted', { key });
+  } catch (e) {
+    logger.warn('Failed to delete article cache', { key, error: e });
+  }
+}
 function articleCacheKey(url: string, targetLang: string): string {
   const hash = hashString(url);
   return `${ARTICLE_CACHE_PREFIX}${ARTICLE_CACHE_VERSION}:${hash}:${targetLang}`;
