@@ -101,13 +101,14 @@ function normalizeItems(item: unknown): ParsedRssItem[] {
 }
 
 function normalizeItem(raw: ParsedRssItem): ParsedRssItem {
-  const contentVal =
-    (raw['content:encoded'] as string | undefined) ?? raw.content;
-  return {
+  const item: ParsedRssItem = {
     ...raw,
     title: raw.title ?? '',
     description: raw.description ?? '',
     link: raw.link ?? '',
-    ...(contentVal ? { content: contentVal } : {}),
   };
+  // 统一移除 content:encoded，所有正文通过 /raw 代理获取译文
+  delete item['content:encoded'];
+  delete item.content;
+  return item;
 }

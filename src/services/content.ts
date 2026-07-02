@@ -542,16 +542,19 @@ function genericExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
 
 function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
   // 移除噪音元素
-  $('.news-article--press-inquiries').remove();
-  $('.news-article--related').remove();
+  $('.news-article--press-inquiries, .news-article--press-inquiries--download-images').remove();
+  $('.news-article--related, .news-article--related-archive').remove();
   $('.news-article--images-gallery').remove();
+  $('.news-article--content--side-column').remove();
+  $('.news-article--content-block--inline-image--items-nav').remove();
 
   const title = $('h1 [itemprop="name headline"]').first().text().trim()
     || fallbackTitle($);
 
   const summary = $('.news-article--dek').first().text().trim() || undefined;
 
-  const author = $('.news-article--author').first().text().trim()
+  const author = $('.news-article--authored-by .news-article--author').first().text().trim()
+    || $('.news-article--author').first().text().trim()
     || extractMeta($, 'meta[name="author"]')
     || undefined;
 
@@ -563,7 +566,7 @@ function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
   const paragraphs: string[] = [];
   const blocks: ContentBlock[] = [];
 
-  // 提取 lead image（og:image，data-src 方式加载）
+  // 提取 lead image（og:image）
   const ogImage = $('meta[property="og:image"]').attr('content');
   if (ogImage) {
     const ogAlt = $('meta[property="og:image:alt"]').attr('content') || '';
@@ -574,25 +577,31 @@ function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
   // 提取正文（.news-article--content--body--inner）
   const $body = $('.news-article--content--body--inner').first();
   if ($body.length) {
-    // 遍历所有子元素，按顺序提取文本和图片
+    // 先提取所有 inline image items（它们可能嵌套在 wrapper 中）
+    $body.find('.news-article--inline-image--item').each((_i, el) => {
+      const $item = $(el);
+      const $img = $item.find('img[loading="lazy"]').first();
+      const src = $img.attr('data-src') || $img.attr('src');
+      const alt = $img.attr('alt') || '';
+      if (src && !images.some(i => i.src === src)) {
+        const caption = $item.find('.news-article--inline-image--caption').first().text().trim();
+        const credits = $item.find('.news-article--inline-image--credits').first().text().trim();
+        const altText = [alt, caption].filter(Boolean).join(' - ');
+        const copyright = credits || undefined;
+        const img: ArticleImage = { src, alt: altText, copyright };
+        images.push(img);
+        blocks.push({ type: 'image', image: img });
+      }
+    });
+
+    // 遍历所有子元素，按顺序提取文本
     $body.children().each((_i, el) => {
       const $el = $(el);
 
-      // inline image blocks
-      if ($el.hasClass('news-article--content-block--inline-image')) {
-        const $img = $el.find('img[loading="lazy"]').first();
-        const src = $img.attr('data-src') || $img.attr('src');
-        const alt = $img.attr('alt') || '';
-        if (src && !images.some(i => i.src === src)) {
-          // 图片描述
-          const caption = $el.find('.news-article--inline-image--caption').first().text().trim();
-          const credits = $el.find('.news-article--inline-image--credits').first().text().trim();
-          const altText = [alt, caption].filter(Boolean).join(' - ');
-          const copyright = credits || undefined;
-          const img: ArticleImage = { src, alt: altText, copyright };
-          images.push(img);
-          blocks.push({ type: 'image', image: img });
-        }
+      // 跳过已处理的 inline image wrapper
+      if ($el.hasClass('news-article--content-block--inline-image--items--wrapper')
+        || $el.hasClass('news-article--content-block--inline-image--items')) {
+        return;
       }
 
       // text blocks

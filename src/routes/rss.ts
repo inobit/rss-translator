@@ -94,18 +94,10 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       channelMeta.title = source.title;
     }
 
-    // 检测 RSS 是否自带正文（如 MIT 的 content:encoded）
-    const hasContent = channel.items.some(item => item.content || item['content:encoded']);
-
     // 处理翻译
     if (source.translate && channel.items.length > 0) {
       const titles = channel.items.map((item) => item.title);
-      const contents: string[] = [];
-      for (const item of channel.items) {
-        contents.push((item['content:encoded'] as string) ?? item.content ?? '');
-      }
 
-      // 翻译标题
       const translatedTitles = await translateTexts({
         engine: effectiveEngine,
         texts: titles,
@@ -117,56 +109,23 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         deeplx: deeplxConfig,
       });
 
-      if (hasContent) {
-        const allTranslatedContents: string[] = new Array(contents.length).fill('');
-        for (let i = 0; i < contents.length; i++) {
-          const content = contents[i];
-          if (!content) continue;
-          // 剥离 HTML 标签，只保留纯文本发送给 LLM 翻译
-          const plainContent = content.replace(/<[^>]*>/g, '').trim();
-          const result = await translateTexts({
-            engine: effectiveEngine,
-            texts: [plainContent],
-            targetLang,
-            sourceLang: 'EN',
-            env: c.env,
-            llm: llmConfig,
-            deeplx: deeplxConfig,
-          });
-          if (result[0]) {
-            allTranslatedContents[i] = result[0];
-          }
-        }
-        // 替换为翻译结果
-        for (let i = 0; i < channel.items.length; i++) {
-          if (allTranslatedContents[i]) {
-            channel.items[i]['content:encoded'] = allTranslatedContents[i];
-          }
-        }
-      }
-
       for (let i = 0; i < channel.items.length; i++) {
         channel.items[i].title = translatedTitles[i] ?? channel.items[i].title;
       }
     }
 
-    // 替换正文链接为代理 URL（仅当 RSS 不自带正文时才重写，否则正文已在 RSS 里翻译）
+    // 替换正文链接为代理 URL
     const token = c.req.query('token') ?? '';
     const itemsOutput = channel.items.map((item) => {
       const output: Record<string, unknown> = {
         ...item,
       };
 
-      if (!noRewrite && source.translate_body && !hasContent && item.link) {
+      if (!noRewrite && source.translate_body && item.link) {
         const encodedUrl = encodeURIComponent(item.link);
         const sourceParam = sourceId ? `&source=${encodeURIComponent(sourceId)}` : '';
         const baseUrl = new URL(c.req.url).origin;
         output.link = `${baseUrl}/raw?url=${encodedUrl}${sourceParam}&token=${encodeURIComponent(token)}`;
-      }
-
-      // 正文已内联翻译时，去掉 normalizeItem 生成的冗余 content 字段，保留 content:encoded
-      if (hasContent) {
-        delete output.content;
       }
 
       return output;
