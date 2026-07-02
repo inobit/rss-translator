@@ -47,7 +47,7 @@ src/
 │   ├── rss.ts         # RSS XML 解析与生成（fast-xml-parser，CDATA 包裹）
 │   └── content.ts     # 文章提取（cheerio + SOURCE_RULES + JSON-LD 降级）
 ├── storage/
-│   └── kv.ts          # KV 读写（配置 + 文本翻译缓存 + 文章 HTML 缓存）
+│   └── kv.ts          # KV 读写（文章 HTML 缓存 + 配置读取）
 └── utils/
     └── logger.ts      # 日志
 ```
@@ -56,8 +56,7 @@ src/
 
 | 绑定 | 用途 |
 |------|------|
-| `RSS_CONFIG` | 存储 `config:rss` 键——RSS 源列表和默认配置 |
-| `RSS_CACHE` | 文本翻译缓存，key 格式 `cache:translate:v5:llm:<hash>:ZH`，TTL 30 天 |
+| `RSS_CONFIG` | 环境变量（wrangler.toml vars，JSON 对象），存储 RSS 源列表和配置 |
 | `RSS_ARTICLE_CACHE` | 文章完整 HTML 缓存，key 格式 `cache:article:v1:<url_hash>:ZH`，TTL 7 天 |
 
 ### 文章缓存 key 计算
@@ -81,13 +80,24 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
     "name": "BBC World",
     "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
     "title": "BBC 国际新闻",
+    "domains": ["bbc.co.uk", "bbc.com"],
     "translate": true,
     "translate_body": true,
-    "engine": "llm"
+    "engine": "deepseek"
   }],
+  "providers": {
+    "deepseek": {
+      "endpoint": "https://api.deepseek.com/v1/chat/completions",
+      "model": "deepseek-v4-flash"
+    },
+    "deeplx": {
+      "type": "deeplx",
+      "endpoint": "https://api.deeplx.org"
+    }
+  },
   "defaults": {
     "target_lang": "ZH",
-    "engine": "llm",
+    "engine": "deepseek",
     "max_articles_per_run": 20
   }
 }
@@ -96,7 +106,10 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | 字段 | 说明 |
 |------|------|
 | `sources[].title` | 可选，自定义 RSS channel title（覆盖原始标题） |
+| `sources[].domains` | 文章域名白名单，为空则不限制 |
 | `sources[].translate_body` | 是否翻译正文并重写 `<link>` 为代理 URL |
+| `sources[].engine` | 翻译引擎：`deeplx` 或任意 `providers` 中配置的名称 |
+| `providers.{name}` | LLM/Deeplx provider 配置，API key 通过 secret `{NAME}_API_KEY` 注入 |
 | `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |
 
 ## Cron 定时任务
@@ -112,15 +125,15 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 
 ## 添加新 source
 
-1. 在 `src/services/content.ts` 的 `SOURCE_RULES` 中添加 source ID 的解析规则
-2. 将 source 的 RSS URL 写入 KV：`npx wrangler kv key put --binding=RSS_CONFIG --remote "config:rss" '...'`
+1. 在 `src/services/content.ts` 的 `SOURCE_EXTRACTORS` 中注册提取函数
+2. 在 `wrangler.toml` 的 `RSS_CONFIG` 中添加 source 配置
 
-解析规则示例：
+解析器注册示例：
 ```ts
-const SOURCE_RULES: Record<string, { contentSelector?; removeSelector? }> = {
-  'bbc-world': {
-    contentSelector: '[data-testid="metadata"], [data-block="text"]',
-  },
+const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
+  'bbc-world': { extract: bbcExtract },
+  'sciam': { extract: sciamExtract },
+  // 未注册的 source 使用 genericExtract 降级
 };
 ```
 
@@ -155,11 +168,8 @@ const SOURCE_RULES: Record<string, { contentSelector?; removeSelector? }> = {
 
 1. 创建 KV namespace：
    ```bash
-   npx wrangler kv namespace create RSS_CONFIG
-   npx wrangler kv namespace create RSS_CACHE
    npx wrangler kv namespace create RSS_ARTICLE_CACHE
    ```
 2. 填入 `wrangler.toml` 的 `[[kv_namespaces]]`
-3. 设置 secrets：`ACCESS_TOKEN`、`LLM_API_KEY`
-4. 写入 KV 配置：`npx wrangler kv key put --binding=RSS_CONFIG --remote "config:rss" '...'`
-5. 部署：`pnpm run deploy`
+3. 设置 secrets：`ACCESS_TOKEN`、每个 provider 的 `{NAME}_API_KEY`
+4. 部署：`pnpm run deploy`

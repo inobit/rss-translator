@@ -11,6 +11,7 @@ export interface ArticleImage {
 
 export type ContentBlock =
   | { type: 'text'; texts: string[] }
+  | { type: 'heading'; text: string }
   | { type: 'image'; image: ArticleImage };
 
 export interface ArticleData {
@@ -18,21 +19,16 @@ export interface ArticleData {
   author?: string;
   role?: string;
   date?: string;
+  summary?: string;
   images: ArticleImage[];
   paragraphs: string[];
-  /** 按原文顺序排列的内容块（图文穿插） */
   blocks: ContentBlock[];
 }
 
-/** 每个 source 的解析规则 */
-const SOURCE_RULES: Record<string, {
-  contentSelector?: string;
-  removeSelector?: string;
-}> = {
-  'bbc-world': {
-    contentSelector: '[data-testid="metadata"], [data-block="text"]',
-  },
-};
+/** 每个 source 的文章提取器 */
+interface SourceExtractor {
+  extract($: ReturnType<typeof cheerio.load>): ArticleData;
+}
 
 /** 默认移除元素 */
 const DEFAULT_REMOVE_SELECTORS = [
@@ -40,29 +36,222 @@ const DEFAULT_REMOVE_SELECTORS = [
   'nav', 'footer', 'aside',
   '.social-share', '.advertisement',
   '[role="navigation"]', '[role="banner"]',
-  '[data-testid="topic-list"]',
-  '[data-component="topic-list"]',
-  '[data-block="promoList"]',
-  '[class*="-TopicList"]', '[class*="-RelatedContent"]',
-  '[class*="-MoreOnThis"]', '[class*="-PromoSwitch"]',
-  'section[class*="comments"]',
 ];
 
+// ================ 通用工具函数 ================
+
+/** 从页面提取 JSON-LD 结构化数据，优先返回 NewsArticle 或 Article 类型 */
+function extractJsonLd($: ReturnType<typeof cheerio.load>): Record<string, unknown> | null {
+  const scripts = $('script[type="application/ld+json"]').toArray();
+  let firstValid: Record<string, unknown> | null = null;
+  for (const el of scripts) {
+    try {
+      const text = $(el).text();
+      if (!text) continue;
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (!firstValid) firstValid = parsed;
+      if (parsed['@type'] === 'NewsArticle' || parsed['@type'] === 'Article') {
+        return parsed;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return firstValid;
+}
+
+/** 通用标题降级：h1 → [data-testid="headline"] → <title> → og:title */
+function fallbackTitle($: ReturnType<typeof cheerio.load>): string {
+  return $('h1').first().text().trim()
+    || $('[data-testid="headline"]').first().text().trim()
+    || $('title').first().text().trim()
+    || $('meta[property="og:title"]').attr('content')
+    || 'Untitled';
+}
+
+/** 通用日期降级 */
+function fallbackDate($: ReturnType<typeof cheerio.load>): string | undefined {
+  const time = $('time[datetime]').first().attr('datetime')
+    || $('time').first().text().trim()
+    || undefined;
+  return time;
+}
+
+/** 英文月份名 → 中文数字 */
+const MONTH_NAMES: Record<string, string> = {
+  january: '1', february: '2', march: '3', april: '4', may: '5', june: '6',
+  july: '7', august: '8', september: '9', october: '10', november: '11', december: '12',
+  jan: '1', feb: '2', mar: '3', apr: '4', jun: '6', jul: '7', aug: '8', sep: '9',
+  oct: '10', nov: '11', dec: '12',
+};
+
 /**
- * 从原文 HTML 提取结构化内容（给 /raw 端点用）
+ * 将日期字符串本地格式化为中文，避免 LLM 翻译日期导致的时区/格式错误
+ * 支持 ISO 8601 和常见英文日期文本
  */
-async function extractArticle(html: string, sourceId?: string): Promise<ArticleData> {
-  const $ = cheerio.load(html);
-  const rules = sourceId ? SOURCE_RULES[sourceId] : undefined;
-  const removeSel = rules?.removeSelector || DEFAULT_REMOVE_SELECTORS.join(', ');
+function formatDateZh(dateStr: string): string {
+  // ISO 8601: "2026-06-30T13:00:00-04:00"
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})[T ]/.exec(dateStr);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10);
+    const day = parseInt(isoMatch[3], 10);
+    return `${year}年${month}月${day}日`;
+  }
 
-  $(removeSel).remove();
+  // "June 30, 2026" / "July 2, 2026" (月份在前)
+  const patternMDY = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})/i;
+  const matchMDY = patternMDY.exec(dateStr);
+  if (matchMDY) {
+    const month = MONTH_NAMES[matchMDY[1].toLowerCase()];
+    const day = parseInt(matchMDY[2], 10);
+    return `${matchMDY[3]}年${month}月${day}日`;
+  }
 
-  // 标题
+  // "2 July 2026" / "30 June 2026" (日期在前)
+  const patternDMY = /(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i;
+  const matchDMY = patternDMY.exec(dateStr);
+  if (matchDMY) {
+    const month = MONTH_NAMES[matchDMY[2].toLowerCase()];
+    const day = parseInt(matchDMY[1], 10);
+    // 提取时间和时区（如 ", 02:55 BST"）
+    const afterDate = dateStr.slice(matchDMY.index + matchDMY[0].length);
+    const timeMatch = /(\d{2}:\d{2})/.exec(afterDate);
+    let suffix = '';
+    if (timeMatch) {
+      suffix += ` ${timeMatch[1]}`;
+      // 时区缩写
+      const tzMatch = /\b([A-Z]{2,4})\b/.exec(afterDate.slice((timeMatch.index ?? 0) + timeMatch[0].length));
+      if (tzMatch && tzMatch[1] !== '00') suffix += ` ${tzMatch[1]}`;
+    }
+    return `${matchDMY[3]}年${month}月${day}日${suffix}`;
+  }
+
+  // 无法解析，返回原文
+  return dateStr;
+}
+
+/** 按 data-block 提取正文和图片（通用逻辑） */
+function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  const $article = $('article').first();
+  $article.find('[data-block]').each((_i, el) => {
+    const $el = $(el);
+    const blockType = $el.attr('data-block') || '';
+
+    if (blockType.includes('text') || blockType.endsWith('/paragraph')) {
+      const $pTags = $el.is('p') ? $el : $el.find('p');
+      const blockParas: string[] = [];
+      $pTags.each((_j, pEl) => {
+        const text = $(pEl).text().trim();
+        if (text && text.length > 10) {
+          paragraphs.push(text);
+          blockParas.push(text);
+        }
+      });
+      // 同时提取子标题（h2/h3/h4），作为独立 heading 块
+      $el.find('h2, h3, h4').each((_j, hEl) => {
+        const text = $(hEl).text().trim();
+        if (text && text.length > 2) {
+          blocks.push({ type: 'heading', text });
+        }
+      });
+      if (blockParas.length > 0) {
+        blocks.push({ type: 'text', texts: blockParas });
+      }
+    } else if (blockType.includes('heading')) {
+      const text = $el.text().trim();
+      if (text && text.length > 2) {
+        blocks.push({ type: 'heading', text });
+      }
+    } else if (blockType.includes('image') || blockType === 'video') {
+      const $img = $el.find('img').first();
+      if ($img.length) {
+        const src = $img.attr('src');
+        const alt = $img.attr('alt') || '';
+        if (src) {
+          const copyright = $el.find('[class*="Copyright"], [class*="copyright"]')
+            .first().text().trim() || undefined;
+          const img: ArticleImage = { src, alt, copyright };
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
+        }
+      }
+    }
+  });
+
+  return { title: '', images, paragraphs, blocks };
+}
+
+/** JSON-LD / meta 降级（视频页或没有 data-block 的页面） */
+function fallbackFromMeta($: ReturnType<typeof cheerio.load>): ArticleData {
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+  let date: string | undefined;
+
+  const jsonLd = extractJsonLd($);
+  if (jsonLd?.['@type'] === 'VideoObject') {
+    const ldThumb = jsonLd.thumbnailUrl;
+    const ldName = jsonLd.name as string | undefined;
+    const ldDesc = jsonLd.description as string | undefined;
+    const ldDate = jsonLd.uploadDate as string | undefined;
+
+    if (ldThumb) {
+      const thumbUrl = Array.isArray(ldThumb) ? (ldThumb[0] as string) : (ldThumb as string);
+      const img: ArticleImage = { src: thumbUrl, alt: ldName || '' };
+      images.push(img);
+      blocks.push({ type: 'image', image: img });
+    }
+    if (ldDesc) {
+      paragraphs.push(ldDesc);
+      blocks.push({ type: 'text', texts: [ldDesc] });
+    }
+    if (ldDate) date = ldDate;
+  } else {
+    const ogImage = $('meta[property="og:image"]').attr('content');
+    const ogAlt = $('meta[property="og:image:alt"]').attr('content') || '';
+    const metaDesc = $('meta[name="description"]').attr('content')
+      || $('meta[property="og:description"]').attr('content') || '';
+
+    if (ogImage) {
+      images.push({ src: ogImage, alt: ogAlt });
+      blocks.push({ type: 'image', image: { src: ogImage, alt: ogAlt } });
+    }
+    if (metaDesc) {
+      paragraphs.push(metaDesc);
+      blocks.push({ type: 'text', texts: [metaDesc] });
+    }
+  }
+
+  $('picture img').each((_i, el) => {
+    const src = $(el).attr('src');
+    const alt = $(el).attr('alt') || '';
+    if (src && images.length < 10) {
+      const img: ArticleImage = { src, alt };
+      images.push(img);
+      blocks.push({ type: 'image', image: img });
+    }
+  });
+
+  return { title: '', author: undefined, role: undefined, date, images, paragraphs, blocks };
+}
+
+
+// ================ BBC 提取器 ================
+
+function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
+  // 移除 BBC 特有噪音
+  $('[data-testid="topic-list"], [data-component="topic-list"], [data-block="promoList"]').remove();
+  $('[class*="-TopicList"], [class*="-RelatedContent"], [class*="-MoreOnThis"], [class*="-PromoSwitch"]').remove();
+  $('section[class*="comments"]').remove();
+
   const title = $('h1[data-testid="headline"], [data-testid="headline"] h1, #main-heading')
-    .first().text().trim() || $('title').first().text().trim() || 'Untitled';
+    .first().text().trim() || fallbackTitle($);
 
-  // 作者和角色
   let author: string | undefined;
   let role: string | undefined;
   const byline = $('[data-testid="single-byline"], [data-testid="byline"]').first();
@@ -73,137 +262,156 @@ async function extractArticle(html: string, sourceId?: string): Promise<ArticleD
       .first().text().trim() || undefined;
   }
 
-  // 日期
   let date: string | undefined;
   const meta = $('[data-testid="metadata"]').first();
   if (meta.length) {
-    date = meta.find('time, [class*="MetadataStrip"] li, [class*="Timestamp"]')
+    // 优先使用 time 元素的 datetime 属性（ISO 8601），更可靠
+    const $time = meta.find('time').first();
+    date = $time.attr('datetime') || $time.text().trim() || undefined;
+    if (!date) date = meta.find('[class*="MetadataStrip"] li, [class*="Timestamp"]')
       .first().text().trim() || undefined;
     if (!date) date = meta.find('li, span').first().text().trim() || undefined;
   }
 
-  // 图片和正文按原文顺序穿插
-  const images: ArticleImage[] = [];
-  const paragraphs: string[] = [];
-  const blocks: ContentBlock[] = [];
-
-  const $article = $('article').first();
-  // 按 data-block 顺序遍历 content 块
-  if ($article.length) {
-    $article.find('[data-block]').each((_i, el) => {
-      const $el = $(el);
-      const blockType = $el.attr('data-block');
-
-      if (blockType === 'text') {
-        const blockParas: string[] = [];
-        $el.find('p').each((_j, pEl) => {
-          const text = $(pEl).text().trim();
-          if (text && text.length > 10) {
-            paragraphs.push(text);
-            blockParas.push(text);
-          }
-        });
-        if (blockParas.length > 0) {
-          blocks.push({ type: 'text', texts: blockParas });
-        }
-      } else if (blockType === 'image' || blockType === 'video') {
-        const $img = $el.find('img').first();
-        if ($img.length) {
-          const src = $img.attr('src');
-          const alt = $img.attr('alt') || '';
-          if (src) {
-            const copyright = $el.find('[class*="Copyright"], [class*="copyright"]')
-              .first().text().trim() || undefined;
-            const image: ArticleImage = { src, alt, copyright };
-            images.push(image);
-            blocks.push({ type: 'image', image });
-          }
-        }
-      }
-    });
+  const data = extractDataBlocks($);
+  if (data.blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    data.images.push(...fallback.images);
+    data.paragraphs.push(...fallback.paragraphs);
+    data.blocks.push(...fallback.blocks);
+    date = date || fallback.date;
   }
 
-  // 降级：如果没有 data-block 结构，尝试从 JSON-LD / meta 提取视频页内容
-  if (blocks.length === 0) {
-    const jsonLd = extractJsonLd($);
-    if (jsonLd?.['@type'] === 'VideoObject') {
-      // 视频页：从 JSON-LD 取缩略图和描述
-      const ldThumb = jsonLd.thumbnailUrl;
-      const ldName = jsonLd.name as string | undefined;
-      const ldDesc = jsonLd.description as string | undefined;
-      const ldDate = jsonLd.uploadDate as string | undefined;
-
-      if (ldThumb) {
-        const thumbUrl = Array.isArray(ldThumb)
-          ? (ldThumb[0] as string)
-          : (ldThumb as string);
-        const img: ArticleImage = { src: thumbUrl, alt: ldName || '' };
-        images.push(img);
-        blocks.push({ type: 'image', image: img });
-      }
-      if (ldDesc) {
-        paragraphs.push(ldDesc);
-        blocks.push({ type: 'text', texts: [ldDesc] });
-      }
-      if (ldDate) {
-        date = date || ldDate;
-      }
-    } else {
-      // 通用降级：用 og:image + meta description
-      const ogImage = $('meta[property="og:image"]').attr('content');
-      const ogAlt = $('meta[property="og:image:alt"]').attr('content') || '';
-      const metaDesc = $('meta[name="description"]').attr('content') || $('meta[property="og:description"]').attr('content') || '';
-
-      if (ogImage) {
-        images.push({ src: ogImage, alt: ogAlt });
-        blocks.push({ type: 'image', image: { src: ogImage, alt: ogAlt } });
-      }
-      if (metaDesc) {
-        paragraphs.push(metaDesc);
-        blocks.push({ type: 'text', texts: [metaDesc] });
-      }
-    }
-
-    // 仍尝试从 DOM 提取图片
-    if (images.length === 0) {
-      $('picture img').each((_i, el) => {
-        const src = $(el).attr('src');
-        const alt = $(el).attr('alt') || '';
-        if (src && images.length < 10) {
-          const img: ArticleImage = { src, alt };
-          images.push(img);
-          blocks.push({ type: 'image', image: img });
-        }
-      });
-    }
-  }
-
-  // 如果还是没有任何段落，用全文降级
-  if (paragraphs.length === 0) {
-    let $container: ReturnType<typeof $> = $();
-    if (rules?.contentSelector) $container = $(rules.contentSelector);
-    if (!$container.length) $container = $('article, [role="main"], main');
-    if ($container.length) {
-      const fullText = $container.text().trim();
-      const parts = fullText.split(/\n{2,}/).filter(p => p.length > 10);
-      paragraphs.push(...parts);
-      if (parts.length > 0) blocks.push({ type: 'text', texts: parts });
-    }
-  }
-
-  return { title, author, role, date, images, paragraphs, blocks };
+  return { title, author, role, date, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks };
 }
 
-/** 从页面提取 JSON-LD 结构化数据 */
-function extractJsonLd($: ReturnType<typeof cheerio.load>): Record<string, unknown> | null {
-  try {
-    const script = $('script[type="application/ld+json"]').first().html();
-    if (!script) return null;
-    const parsed: unknown = JSON.parse(script);
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
+
+// ================ SciAm 提取器 ================
+
+/** 从 JSON-LD author/editor 字段提取名称，兼容单对象和数组格式 */
+function extractPersonName(value: unknown): string | undefined {
+  if (!value) return undefined;
+  if (!Array.isArray(value)) {
+    return (value as { name?: string })?.name || undefined;
   }
+  return (value[0] as { name?: string })?.name || undefined;
+}
+
+/** 从 meta 标签提取内容 */
+function extractMeta($: ReturnType<typeof cheerio.load>, selector: string): string | undefined {
+  return $(selector).attr('content')?.trim() || undefined;
+}
+
+function sciamExtract($: ReturnType<typeof cheerio.load>): ArticleData {
+  // 移除 SciAm 特有的募捐/订阅广告和转载声明
+  $('[class*="subscriptionPlea"], [class*="donation"], [class*="inlineNewsletter"]').remove();
+
+  // 过滤转载声明段落（This article was originally published by...）
+  const isReprintNote = (text: string) =>
+    /originally published|originally appeared|read the original|最初发表|最初刊登|原文|转载|本文最初|Stand Up for Science|stand up for science/i.test(text);
+
+  const jsonLd = extractJsonLd($);
+  const title = (jsonLd?.headline as string) || fallbackTitle($);
+  const date = (jsonLd?.datePublished as string)
+    || extractMeta($, 'meta[property="article:published_time"]')
+    || extractMeta($, 'meta[name="pubdate"]')
+    || extractMeta($, 'meta[name="date"]')
+    || $('[class*="article_pub_date"]').first().text().trim()
+    || fallbackDate($);
+  const author = extractPersonName(jsonLd?.author)
+    || extractMeta($, 'meta[name="author"]')
+    || undefined;
+  const summary = (jsonLd?.description as string)
+    || extractMeta($, 'meta[name="description"]')
+    || extractMeta($, 'meta[property="og:description"]')
+    || undefined;
+  const data = extractDataBlocks($);
+
+  // 从 JSON-LD 或 og:image 提取题图
+  if (data.images.length === 0) {
+    const ldImg = jsonLd?.thumbnailUrl || jsonLd?.image;
+    const ldImgUrl: string | undefined = Array.isArray(ldImg)
+      ? (ldImg[0] as string)
+      : ldImg as string | undefined;
+    const ogImg = $('meta[property="og:image"]').attr('content');
+    const heroUrl = ldImgUrl || ogImg;
+    if (heroUrl) {
+      const alt = (jsonLd?.name as string) || $('meta[property="og:image:alt"]').attr('content') || '';
+      data.images.unshift({ src: heroUrl, alt });
+      data.blocks.unshift({ type: 'image', image: { src: heroUrl, alt } });
+    }
+  }
+
+  // 过滤转载声明段落
+  data.blocks = data.blocks.filter(b => {
+    if (b.type === 'text') {
+      b.texts = b.texts.filter(t => !isReprintNote(t));
+      return b.texts.length > 0;
+    }
+    if (b.type === 'heading') {
+      return !isReprintNote(b.text);
+    }
+    return true;
+  });
+  data.paragraphs = data.paragraphs.filter(p => !isReprintNote(p));
+  if (data.blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    data.images.push(...fallback.images);
+    data.paragraphs.push(...fallback.paragraphs);
+    data.blocks.push(...fallback.blocks);
+  }
+
+  return { title, author, date, summary, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks };
+}
+
+
+// ================ 通用提取器（降级） ================
+
+function genericExtract($: ReturnType<typeof cheerio.load>): ArticleData {
+  const jsonLd = extractJsonLd($);
+  const title = (jsonLd?.headline as string) || fallbackTitle($);
+
+  const data = extractDataBlocks($);
+  if (data.blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    data.images.push(...fallback.images);
+    data.paragraphs.push(...fallback.paragraphs);
+    data.blocks.push(...fallback.blocks);
+  }
+
+  return {
+    title,
+    images: data.images,
+    paragraphs: data.paragraphs,
+    blocks: data.blocks,
+  };
+}
+
+
+// ================ 注册表 ================
+
+const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
+  'bbc-world': { extract: bbcExtract },
+  'bbc-business': { extract: bbcExtract },
+  'bbc': { extract: bbcExtract },
+  'sciam': { extract: sciamExtract },
+};
+
+
+// ================ 入口 ================
+
+/**
+ * 从原文 HTML 提取结构化内容
+ */
+async function extractArticle(html: string, sourceId?: string): Promise<ArticleData> {
+  const $ = cheerio.load(html);
+
+  // 移除通用噪音元素
+  $(DEFAULT_REMOVE_SELECTORS.join(', ')).remove();
+
+  const extractor = sourceId ? SOURCE_EXTRACTORS[sourceId] : undefined;
+  const result = extractor ? extractor.extract($) : genericExtract($);
+  return result;
 }
 
 /**
@@ -219,12 +427,16 @@ async function translateArticle(
 
   if (article.title) toTranslate.push(article.title);
   if (article.role) toTranslate.push(article.role);
-  if (article.date) toTranslate.push(article.date);
+  if (article.summary) toTranslate.push(article.summary);
 
-  // 按 blocks 顺序收集所有文本
+  // 日期不经过 LLM 翻译，本地格式化避免时区/格式错误
+  if (article.date) article.date = formatDateZh(article.date);
+
   for (const block of article.blocks) {
     if (block.type === 'image') {
       if (block.image.alt) toTranslate.push(block.image.alt);
+    } else if (block.type === 'heading') {
+      toTranslate.push(block.text);
     } else {
       for (const t of block.texts) toTranslate.push(t);
     }
@@ -244,11 +456,13 @@ async function translateArticle(
 
   if (article.title) article.title = translated[idx++] || article.title;
   if (article.role) article.role = translated[idx++] || article.role;
-  if (article.date) article.date = translated[idx++] || article.date;
+  if (article.summary) article.summary = translated[idx++] || article.summary;
 
   for (const block of article.blocks) {
     if (block.type === 'image') {
       if (block.image.alt) block.image.alt = translated[idx++] || block.image.alt;
+    } else if (block.type === 'heading') {
+      block.text = translated[idx++] || block.text;
     } else {
       for (let i = 0; i < block.texts.length; i++) {
         block.texts[i] = translated[idx++] || block.texts[i];
@@ -256,7 +470,6 @@ async function translateArticle(
     }
   }
 
-  // 同步到旧的 flat 数组以保持兼容
   article.paragraphs = article.blocks
     .filter(b => b.type === 'text')
     .flatMap(b => b.texts);
@@ -282,6 +495,11 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
     bylineHtml += '</div>';
   }
 
+  let summaryHtml = '';
+  if (article.summary) {
+    summaryHtml = `<div class="summary">${esc(article.summary)}</div>`;
+  }
+
   let bodyHtml = '';
   for (const block of article.blocks) {
     if (block.type === 'image') {
@@ -291,12 +509,13 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
         ${img.alt ? `<figcaption>${esc(img.alt)}</figcaption>` : ''}
         ${img.copyright ? `<span class="copyright">${esc(img.copyright)}</span>` : ''}
       </figure>`;
+    } else if (block.type === 'heading') {
+      bodyHtml += `<h2 class="subheading">${esc(block.text)}</h2>`;
     } else {
       bodyHtml += block.texts.map(p => `<p>${esc(p)}</p>`).join('\n');
     }
   }
 
-  // 零散图片（不在 blocks 里的）
   for (const img of article.images) {
     if (bodyHtml.includes(esc(img.src))) continue;
     bodyHtml += `<figure class="article-image">
@@ -304,7 +523,6 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
       ${img.alt ? `<figcaption>${esc(img.alt)}</figcaption>` : ''}
     </figure>`;
   }
-  // 零散段落（不在 blocks 里的）
   for (const p of article.paragraphs) {
     if (bodyHtml.includes(esc(p.slice(0, 40)))) continue;
     bodyHtml += `<p>${esc(p)}</p>`;
@@ -326,11 +544,13 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   .role { color: #545658; }
   .date { color: #8a8c8e; }
   .date::before { content: "·"; margin: 0 8px; }
+  .summary { font-size: 16px; color: #545658; line-height: 1.55; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid #e6e6e6; }
   .article-image { margin: 24px 0; }
   .article-image img { width: 100%; height: auto; display: block; }
   .article-image figcaption { font-size: 13px; color: #545658; padding: 8px 0 0; line-height: 1.4; }
   .article-image .copyright { font-size: 11px; color: #8a8c8e; }
   p { font-size: 18px; line-height: 1.7; margin-bottom: 18px; color: #141414; }
+  .subheading { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 32px 0 12px; color: #141414; }
   .original-link { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e6e6e6; font-size: 14px; }
   .original-link a { color: #545658; text-decoration: none; }
   .original-link a:hover { text-decoration: underline; }
@@ -345,6 +565,7 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
 <article>
   <h1>${esc(article.title)}</h1>
   ${bylineHtml}
+  ${summaryHtml}
   ${bodyHtml}
   <div class="original-link"><a href="${esc(originalUrl)}" target="_blank" rel="noopener">查看原文</a></div>
 </article>
