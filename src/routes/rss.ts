@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv, RssSource } from '../types';
 import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
 import { translateTexts, resolveProvider } from '../services/translate';
-import { getConfig } from '../storage/kv';
+import { getConfig, getRssCache, setRssCache, hashString } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
 export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -44,6 +44,8 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     const effectiveEngine = engineOverride as typeof source.engine ?? source.engine;
     const targetLang = config?.defaults?.target_lang ?? 'ZH';
+    const cacheKey = sourceId || '__dynamic__';
+
     const resolved = effectiveEngine !== 'deeplx' || config?.providers?.[effectiveEngine]
       ? resolveProvider(effectiveEngine, c.env, config?.providers)
       : null;
@@ -59,6 +61,22 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     }
 
     const xml = await resp.text();
+
+    // hash 比对：原始 RSS 未变则返回缓存的翻译 XML
+    const rssCached = await getRssCache(c.env, cacheKey, targetLang);
+    if (rssCached) {
+      const currentHash = hashString(xml);
+      if (rssCached.hash === currentHash) {
+        logger.info(`Serving cached RSS for: ${cacheKey}`);
+        return new Response(rssCached.xml, {
+          headers: {
+            'Content-Type': 'application/rss+xml; charset=utf-8',
+            'Cache-Control': 'public, max-age=300',
+          },
+        });
+      }
+    }
+
     const parsed = parseRssXml(xml);
     if (!parsed) {
       return c.json({ error: 'Failed to parse RSS XML' }, 500);
@@ -124,6 +142,11 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     });
 
     const rssXml = buildRssXml(channelMeta as Record<string, unknown>, itemsOutput, parsed.rssAttrs);
+
+    // 异步写 RSS 缓存
+    c.executionCtx.waitUntil(
+      setRssCache(c.env, cacheKey, targetLang, xml, rssXml),
+    );
 
     return new Response(rssXml, {
       headers: {
