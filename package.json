@@ -1,0 +1,29 @@
+{
+  "name": "rss-translator",
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.26.1",
+  "description": "RSS 订阅翻译代理 — Cloudflare Worker",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src",
+    "lint:fix": "eslint src --fix",
+    "cf:typegen": "wrangler types",
+    "config:push": "wrangler kv key put --binding=RSS_CONFIG --remote \"config:rss\" \"$(cat config.json)\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240401.0",
+    "@eslint/js": "^9.23.0",
+    "eslint": "^9.23.0",
+    "globals": "^17.4.0",
+    "typescript": "^5.3.3",
+    "wrangler": "^4.0.0"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "fast-xml-parser": "^4.5.0",
+    "hono": "^3.12.0"
+  }
+}

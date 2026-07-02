@@ -1,0 +1,30 @@
+name = "rss-translator"
+main = "src/worker.ts"
+compatibility_date = "2024-04-01"
+
+# 每 10 分钟预缓存翻译好的文章正文
+[triggers]
+crons = ["*/10 * * * *"]
+
+[vars]
+LOG_LEVEL = "info"
+DEEPLX_BASE_URL = "https://api.deeplx.org"
+LLM_ENDPOINT = "https://api.deepseek.com/v1/chat/completions"
+LLM_MODEL = "deepseek-v4-flash"
+
+[[kv_namespaces]]
+binding = "RSS_CONFIG"
+id = "e99341be9de6474a9a710eb7439a6f56"
+
+# [[kv_namespaces]]
+# binding = "RSS_CACHE"
+# id = ""
+
+#
+# [[kv_namespaces]]
+# binding = "RSS_CACHE"
+# id = ""
+
+[[kv_namespaces]]
+binding = "RSS_ARTICLE_CACHE"
+id = "df144d8668a14e7c92da5c1545957c6d"
