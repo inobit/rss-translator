@@ -13,6 +13,7 @@ RSS_CONFIG = { defaults = { engine = "deepseek", max_articles_per_run = 20, targ
   { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc", name = "BBC", title = "BBC 新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/rss.xml" },
   { domains = ["scientificamerican.com"], engine = "deepseek", id = "sciam", name = "Scientific American", title = "科学美国人", translate = true, translate_body = true, url = "http://rss.sciam.com/ScientificAmerican-Global" },
   { domains = ["theguardian.com"], engine = "deepseek", id = "guardian-ai", name = "The Guardian AI", title = "卫报 AI", translate = true, translate_body = true, url = "https://www.theguardian.com/technology/artificialintelligenceai/rss" },
+  { domains = ["theguardian.com"], engine = "deepseek", id = "guardian-china", name = "The Guardian China", title = "卫报 中国", translate = true, translate_body = true, url = "https://www.theguardian.com/world/china/rss" },
   { engine = "deepseek", id = "mit-news", name = "MIT News", title = "MIT 新闻", translate = true, translate_body = true, url = "https://news.mit.edu/rss/feed" }
 ] }
 LOG_LEVEL = "info"

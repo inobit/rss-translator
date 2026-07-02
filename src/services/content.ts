@@ -541,6 +541,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'bbc': { extract: bbcExtract },
   'sciam': { extract: sciamExtract },
   'guardian-ai': { extract: guardianExtract },
+  'guardian-china': { extract: guardianExtract },
 };
 
 
