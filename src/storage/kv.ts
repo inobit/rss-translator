@@ -2,7 +2,7 @@ import type { RssConfig } from '../types';
 import { createLogger } from '../utils/logger';
 import type { WorkerEnv } from '../types';
 
-const CONFIG_KEY = 'config:rss';
+const CONFIG_VAR = 'RSS_CONFIG';
 
 const ARTICLE_CACHE_PREFIX = 'cache:article:';
 const ARTICLE_CACHE_VERSION = 'v1';
@@ -22,17 +22,19 @@ const logger = createLogger();
 
 export async function getConfig(env: WorkerEnv): Promise<RssConfig | null> {
   try {
-    const raw = await env.RSS_CONFIG.get(CONFIG_KEY);
+    const raw = env[CONFIG_VAR];
     if (!raw) return null;
-    return JSON.parse(raw) as RssConfig;
-  } catch (e) {
-    logger.error('Failed to read config from KV', e);
+    // Dashboard JSON 类型变量直接是对象，Text 类型变量是字符串
+    if (typeof raw === 'object') return raw as RssConfig;
+    return JSON.parse(raw as string) as RssConfig;
+  } catch {
     return null;
   }
 }
 
-export async function setConfig(env: WorkerEnv, config: RssConfig): Promise<void> {
-  await env.RSS_CONFIG.put(CONFIG_KEY, JSON.stringify(config));
+export async function setConfig(_env: WorkerEnv, config: RssConfig): Promise<void> {
+  // 仅用于本地脚本更新配置，线上通过 Dashboard 或 wrangler 变量管理
+  console.log(JSON.stringify(config));
 }
 
 /** 生成文章 HTML 缓存的 key */

@@ -3,6 +3,7 @@ import { getConfig } from './storage/kv';
 import { parseRssXml } from './services/rss';
 import { getArticleCache, setArticleCache } from './storage/kv';
 import { fetchAndTranslatePage } from './services/content';
+import { resolveProvider } from './services/translate';
 import { createLogger } from './utils/logger';
 
 /** 每次运行最多预缓存的文章数（默认值） */
@@ -63,10 +64,15 @@ export async function handleScheduled(
 
         logger.info(`Pre-caching article: ${item.title.slice(0, 60)}`);
         try {
+          const engine = source.engine ?? 'llm';
+          const resolved = resolveProvider(engine, env, config.providers);
+          const llmProvider = resolved?.type === 'llm' ? resolved.config : undefined;
           const html = await fetchAndTranslatePage(
             item.link,
             env,
             source.id,
+            engine,
+            llmProvider,
           );
           await setArticleCache(env, item.link, targetLang, html);
           cachedCount++;

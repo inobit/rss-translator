@@ -2,6 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
 import { fetchAndTranslatePage } from '../services/content';
 import { getConfig, getArticleCache, setArticleCache } from '../storage/kv';
+import { resolveProvider } from '../services/translate';
 import { createLogger } from '../utils/logger';
 
 export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -64,7 +65,12 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     try {
       // 缓存未命中，实时翻译并缓存
       logger.info(`Translating on demand: ${decodedUrl}`);
-      const translatedHtml = await fetchAndTranslatePage(decodedUrl, c.env, sourceId || undefined);
+      const engine = source.engine ?? 'llm';
+      const resolved = resolveProvider(engine, c.env, config?.providers);
+      const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
+      const translatedHtml = await fetchAndTranslatePage(
+        decodedUrl, c.env, sourceId || undefined, engine, llmConfig,
+      );
 
       // 异步写缓存（不阻塞响应）
       c.executionCtx.waitUntil(

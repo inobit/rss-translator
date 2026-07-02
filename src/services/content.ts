@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { createLogger } from '../utils/logger';
 import type { WorkerEnv } from '../types';
-import { translateTexts } from './translate';
+import { translateTexts, type LlmProviderConfig } from './translate';
 
 export interface ArticleImage {
   src: string;
@@ -212,6 +212,8 @@ function extractJsonLd($: ReturnType<typeof cheerio.load>): Record<string, unkno
 async function translateArticle(
   article: ArticleData,
   env: WorkerEnv,
+  engine: string,
+  llm?: LlmProviderConfig,
 ): Promise<ArticleData> {
   const toTranslate: string[] = [];
 
@@ -233,8 +235,8 @@ async function translateArticle(
   let translated: string[];
   try {
     translated = await translateTexts({
-      engine: 'llm', texts: toTranslate, targetLang: 'ZH',
-      sourceLang: 'EN', env,
+      engine, texts: toTranslate, targetLang: 'ZH',
+      sourceLang: 'EN', env, llm,
     });
   } catch { return article; }
 
@@ -357,6 +359,8 @@ export async function fetchAndTranslatePage(
   url: string,
   env: WorkerEnv,
   sourceId?: string,
+  engine?: string,
+  llm?: LlmProviderConfig,
 ): Promise<string> {
   const logger = createLogger(env);
 
@@ -370,7 +374,7 @@ export async function fetchAndTranslatePage(
   const article = await extractArticle(html, sourceId);
   logger.info(`Extracted: title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
 
-  const translated = await translateArticle(article, env);
+  const translated = await translateArticle(article, env, engine ?? 'llm', llm);
 
   return renderArticleHtml(translated, url);
 }

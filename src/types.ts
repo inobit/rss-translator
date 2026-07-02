@@ -1,7 +1,17 @@
 /// <reference types="@cloudflare/workers-types" />
 
-/** 翻译引擎类型 */
-export type TranslateEngine = 'deeplx' | 'llm';
+/** 翻译引擎类型（deeplx 或任意 LLM provider 名称） */
+export type TranslateEngine = string;
+
+/** Provider 配置 */
+export interface TranslateProvider {
+  /** API 类型：deeplx 或 OpenAI 兼容 */
+  type?: 'deeplx' | 'llm';
+  endpoint: string;
+  /** LLM 才需要，deeplx 不需要 */
+  model?: string;
+  /** 对应 Cloudflare secret：{NAME}_API_KEY */
+}
 
 /** 翻译语言代码 */
 export type LangCode = 'ZH' | 'EN' | 'JA' | 'KO' | 'FR' | 'DE' | 'ES' | 'PT' | 'IT' | 'NL' | 'PL' | 'RU';
@@ -23,6 +33,8 @@ export interface RssSource {
 /** KV 中存储的全局配置 */
 export interface RssConfig {
   sources: RssSource[];
+  /** 多 provider 配置，key 为 provider 名称 */
+  providers?: Record<string, TranslateProvider>;
   defaults: {
     target_lang: string;
     engine: TranslateEngine;
@@ -36,13 +48,7 @@ export interface RssConfig {
 
 /** Worker 环境变量 */
 export interface WorkerEnv {
-  RSS_CONFIG: KVNamespace;
   RSS_ARTICLE_CACHE: KVNamespace;
-  DEEPLX_BASE_URL: string;
-  DEEPLX_API_KEY: string;
-  LLM_ENDPOINT?: string;
-  LLM_MODEL?: string;
-  LLM_API_KEY?: string;
   ACCESS_TOKEN: string;
   LOG_LEVEL?: string;
   [key: string]: unknown;

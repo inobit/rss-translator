@@ -7,23 +7,8 @@ compatibility_date = "2024-04-01"
 crons = ["*/10 * * * *"]
 
 [vars]
+RSS_CONFIG = { defaults = { engine = "deepseek", max_articles_per_run = 20, target_lang = "ZH" }, providers = { deeplx = { endpoint = "https://api.deeplx.org", type = "deeplx" }, deepseek = { endpoint = "https://api.deepseek.com/v1/chat/completions", model = "deepseek-v4-flash" }, nvidia = { endpoint = "https://integrate.api.nvidia.com/v1/chat/completions", model = "meta/llama-4-maverick-17b-128e-instruct-fp8" } }, sources = [{ domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-world", name = "BBC World", title = "BBC 国际新闻", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/world/rss.xml" }, { domains = ["bbc.co.uk", "bbc.com"], engine = "deepseek", id = "bbc-business", name = "BBC Business", title = "BBC 商业", translate = true, translate_body = true, url = "https://feeds.bbci.co.uk/news/business/rss.xml" }] }
 LOG_LEVEL = "info"
-DEEPLX_BASE_URL = "https://api.deeplx.org"
-LLM_ENDPOINT = "https://api.deepseek.com/v1/chat/completions"
-LLM_MODEL = "deepseek-v4-flash"
-
-[[kv_namespaces]]
-binding = "RSS_CONFIG"
-id = "e99341be9de6474a9a710eb7439a6f56"
-
-# [[kv_namespaces]]
-# binding = "RSS_CACHE"
-# id = ""
-
-#
-# [[kv_namespaces]]
-# binding = "RSS_CACHE"
-# id = ""
 
 [[kv_namespaces]]
 binding = "RSS_ARTICLE_CACHE"

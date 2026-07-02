@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv, RssSource } from '../types';
 import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
-import { translateTexts } from '../services/translate';
+import { translateTexts, resolveProvider } from '../services/translate';
 import { getConfig } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
@@ -44,6 +44,11 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     const effectiveEngine = engineOverride as typeof source.engine ?? source.engine;
     const targetLang = config?.defaults?.target_lang ?? 'ZH';
+    const resolved = effectiveEngine !== 'deeplx' || config?.providers?.[effectiveEngine]
+      ? resolveProvider(effectiveEngine, c.env, config?.providers)
+      : null;
+    const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
+    const deeplxConfig = resolved?.type === 'deeplx' ? { endpoint: resolved.endpoint, apiKey: resolved.apiKey } : undefined;
 
     // 抓取原始 RSS
     logger.info(`Fetching RSS: ${source.url}`);
@@ -80,6 +85,8 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
           sourceLang: 'EN',
           env: c.env,
           prompt: config?.llm_prompt,
+          llm: llmConfig,
+          deeplx: deeplxConfig,
         }),
         translateTexts({
           engine: effectiveEngine,
@@ -88,6 +95,8 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
           sourceLang: 'EN',
           env: c.env,
           prompt: config?.llm_prompt,
+          llm: llmConfig,
+          deeplx: deeplxConfig,
         }),
       ]);
 

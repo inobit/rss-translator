@@ -10,8 +10,7 @@
     "type-check": "tsc --noEmit",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "cf:typegen": "wrangler types",
-    "config:push": "wrangler kv key put --binding=RSS_CONFIG --remote \"config:rss\" \"$(cat config.json)\""
+    "cf:typegen": "wrangler types"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240401.0",
