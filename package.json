@@ -10,13 +10,17 @@
     "type-check": "tsc --noEmit",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",
-    "cf:typegen": "wrangler types"
+    "cf:typegen": "wrangler types",
+    "push-config": "node scripts/push-config.mjs",
+    "push-config:local": "node scripts/push-config.mjs --local"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240401.0",
     "@eslint/js": "^9.23.0",
+    "@types/js-yaml": "^4.0.9",
     "eslint": "^9.23.0",
     "globals": "^17.4.0",
+    "js-yaml": "^5.2.1",
     "typescript": "^5.3.3",
     "wrangler": "^4.0.0"
   },

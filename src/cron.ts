@@ -66,7 +66,7 @@ export async function handleScheduled(
 
         logger.info(`Pre-caching article: ${item.title.slice(0, 60)}`);
         try {
-          const engine = source.engine ?? 'llm';
+          const engine = source.engine ?? config.defaults.engine ?? 'deeplx';
           const resolved = resolveProvider(engine, env, config.providers);
           const llmProvider = resolved?.type === 'llm' ? resolved.config : undefined;
           const html = await fetchAndTranslatePage(

@@ -37,7 +37,7 @@ export interface RssConfig {
   providers?: Record<string, TranslateProvider>;
   defaults: {
     target_lang: string;
-    engine: TranslateEngine;
+  engine?: TranslateEngine;
     /** 翻译缓存天数，默认 30 */
     cache_ttl_days?: number;
     /** 每次 cron 运行最多预缓存的文章数，默认 10 */

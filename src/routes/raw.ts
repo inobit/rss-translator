@@ -65,7 +65,7 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     try {
       // 缓存未命中，实时翻译并缓存
       logger.info(`Translating on demand: ${decodedUrl}`);
-      const engine = source.engine ?? 'llm';
+      const engine = source.engine ?? config?.defaults?.engine ?? 'deeplx';
       const resolved = resolveProvider(engine, c.env, config?.providers);
       const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
       const translatedHtml = await fetchAndTranslatePage(

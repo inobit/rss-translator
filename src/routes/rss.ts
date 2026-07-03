@@ -42,7 +42,7 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       };
     }
 
-    const effectiveEngine = engineOverride as typeof source.engine ?? source.engine;
+    const effectiveEngine = engineOverride ?? source.engine ?? config?.defaults?.engine ?? 'deeplx';
     const targetLang = config?.defaults?.target_lang ?? 'ZH';
     const cacheKey = sourceId || '__dynamic__';
 
