@@ -2,7 +2,7 @@ import type { RssConfig } from '../types';
 import { createLogger } from '../utils/logger';
 import type { WorkerEnv } from '../types';
 
-const CONFIG_VAR = 'RSS_CONFIG';
+const CONFIG_KEY = 'config';
 
 const ARTICLE_CACHE_PREFIX = 'cache:article:';
 const ARTICLE_CACHE_VERSION = 'v1';
@@ -25,11 +25,9 @@ const logger = createLogger();
 
 export async function getConfig(env: WorkerEnv): Promise<RssConfig | null> {
   try {
-    const raw = env[CONFIG_VAR];
+    const raw = await env.RSS_CONFIG.get(CONFIG_KEY);
     if (!raw) return null;
-    // Dashboard JSON 类型变量直接是对象，Text 类型变量是字符串
-    if (typeof raw === 'object') return raw as RssConfig;
-    return JSON.parse(raw as string) as RssConfig;
+    return JSON.parse(raw) as RssConfig;
   } catch {
     return null;
   }
