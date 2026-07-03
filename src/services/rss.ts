@@ -11,6 +11,9 @@ const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: ATTR_PREFIX,
   parseTagValue: false,
+  // 不解析属性值类型，保持 "true"/"false"/数字 为字符串，
+  // 避免 builder 将 "true" 输出为无值布尔属性（非法 XML）
+  parseAttributeValue: false,
   processEntities: { enabled: true, maxTotalExpansions: 100000 },
 });
 
@@ -78,7 +81,23 @@ export function buildRssXml(
       },
     },
   };
-  return builder.build(xmlObj);
+  const xml = builder.build(xmlObj);
+  // fast-xml-parser builder 会将值为 "true" 的属性输出为无值布尔属性
+  // （如 <guid isPermaLink>），这在 XML 中是非法的——属性必须有值。
+  // 此处修复：为无值属性补上 ="true"
+  return fixValuelessAttributes(xml);
+}
+
+/**
+ * 修复无值布尔属性：将 `attr`（无等号无值）补全为 `attr="true"`
+ * 仅在标签定义内（<tag ...>）处理，不影响 CDATA / 文本内容
+ */
+function fixValuelessAttributes(xml: string): string {
+  // <[a-zA-Z_] 排除 CDATA(<!)、注释(<!--)、处理指令(<?)
+  // [^>]* 确保不跨标签边界
+  return xml.replace(/<[a-zA-Z_][^>]*>/g, (tag) => {
+    return tag.replace(/\s([a-zA-Z_:][\w:.\-]*)(?=\s|>|\/)/g, ' $1="true"');
+  });
 }
 
 /** 将需要 CDATA 包裹的字符串字段包装为 { __cdata: val } */
