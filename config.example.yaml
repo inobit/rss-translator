@@ -23,10 +23,10 @@ providers:
   #   model: "@cf/meta/m2m100-1.2b"
   #   api_key_name: CLOUDFLARE_API_KEY
 
-  # Cloudflare Workers AI LLM（需设置 CLOUDFLARE_API_KEY secret，与 cfai 共用 key）
+  # Cloudflare Workers AI LLM，OpenAI 兼容（需设置 CLOUDFLARE_API_KEY secret，与 cfai 共用 key）
   # cfllm:
-  #   endpoint: https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/run/@cf/zai-org/glm-4.7-flash
-  #   model: ""  # 模型已在 URL 中，不需要在 body 发送
+  #   endpoint: https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/v1/chat/completions
+  #   model: "@cf/zai-org/glm-4.7-flash"
   #   api_key_name: CLOUDFLARE_API_KEY
 
   # DeepSeek（LLM，需设置 DEEPSEEK_API_KEY secret）

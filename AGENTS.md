@@ -95,8 +95,8 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
       "endpoint": "https://api.deeplx.org"
     },
     "cfllm": {
-      "endpoint": "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run/@cf/zai-org/glm-4.7-flash",
-      "model": "",
+      "endpoint": "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1/chat/completions",
+      "model": "@cf/zai-org/glm-4.7-flash",
       "api_key_name": "CLOUDFLARE_API_KEY"
     }
   },
@@ -116,7 +116,7 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `sources[].engines` | 翻译 provider 名称数组，按顺序尝试，失败自动流转到下一个 |
 | `sources[].engine` | **已废弃**，请使用 `engines` 数组 |
 | `providers.{name}.type` | `"deeplx"` / `"cloudflare"` / `"llm"`（默认），决定调用哪种 API |
-| `providers.{name}.model` | 模型名，留空表示模型已在 URL 中（如 CF Workers AI `/run/@cf/...`），此时请求体不发送 model 字段 |
+| `providers.{name}.model` | 模型名，LLM 类型必填；`type: cloudflare` 时模型已在 URL 中可留空 |
 | `providers.{name}.api_key_name` | 显式指定 Cloudflare secret 名称，优先级高于默认的 `{NAME}_API_KEY`；多个 provider 可共享同一个 key |
 | `providers.{name}.max_input_tokens` | LLM 单次请求最大输入 token 数，超过自动分批 |
 | `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |

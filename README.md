@@ -66,9 +66,9 @@ providers:
   #   type: deeplx
   #   endpoint: https://api.deeplx.org
   #
-  # cfllm:               # Cloudflare Workers AI LLM（需设置 CLOUDFLARE_API_KEY secret）
-  #   endpoint: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run/@cf/zai-org/glm-4.7-flash
-  #   model: ""           # 模型已在 URL 中
+  # cfllm:               # Cloudflare Workers AI LLM，OpenAI 兼容（需设置 CLOUDFLARE_API_KEY secret）
+  #   endpoint: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1/chat/completions
+  #   model: "@cf/zai-org/glm-4.7-flash"
   #   api_key_name: CLOUDFLARE_API_KEY
 
 sources:
