@@ -10,6 +10,23 @@ GET /rss?source=bbc-world&token=<TOKEN>
 
 返回翻译后的 RSS XML，导入任意 RSS 阅读器即可。
 
+## 支持的 Source
+
+| source            | 说明                           | RSS Feed URL                                                  |
+|-------------------|--------------------------------|---------------------------------------------------------------|
+| `bbc-world`       | BBC 国际新闻                   | `https://feeds.bbci.co.uk/news/world/rss.xml`                 |
+| `bbc-business`    | BBC 商业新闻                   | `https://feeds.bbci.co.uk/news/business/rss.xml`              |
+| `bbc`             | BBC（通用）                    | `https://feeds.bbci.co.uk/news/rss.xml`                       |
+| `sciam`           | Scientific American            | `http://rss.sciam.com/ScientificAmerican-Global`              |
+| `guardian-ai`     | The Guardian（AI）             | `https://www.theguardian.com/technology/artificialintelligenceai/rss` |
+| `guardian-china`  | The Guardian（中国）           | `https://www.theguardian.com/world/china/rss`                 |
+| `mit-news`        | MIT News                       | `https://news.mit.edu/rss/feed`                               |
+| `theregister-ai`  | The Register（AI/ML）          | `https://www.theregister.com/software/ai_ml/headlines.atom`   |
+| `tds`             | Towards Data Science           | `https://towardsdatascience.com/feed/`                        |
+| `simonw`          | Simon Willison's Blog          | `https://simonwillison.net/atom/everything/`                  |
+
+未注册的 source 使用通用提取器降级处理。
+
 ## 配置
 
 编辑 `config.json`，然后推送 KV：
