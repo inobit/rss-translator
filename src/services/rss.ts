@@ -26,32 +26,110 @@ const builder = new XMLBuilder({
 });
 
 /**
- * 解析 RSS XML 字符串，返回结构化对象
+ * 解析 RSS/Atom XML 字符串，返回结构化对象
  */
 export function parseRssXml(xml: string): ParsedRss | null {
   try {
     const parsed = parser.parse(xml);
     const rss = parsed.rss ?? parsed['rdf:RDF'];
-    if (!rss) return null;
+    if (rss) {
+      const channel = rss.channel;
+      if (!channel) return null;
 
-    const channel = rss.channel;
-    if (!channel) return null;
+      const items = normalizeItems(channel.item);
 
-    const items = normalizeItems(channel.item);
+      // 提取 <rss> 或 <rdf:RDF> 的命名空间等属性
+      const { channel: _ch, ...rssAttrs } = rss;
 
-    // 提取 <rss> 或 <rdf:RDF> 的命名空间等属性
-    const { channel: _ch, ...rssAttrs } = rss;
+      return {
+        rssAttrs: rssAttrs as Record<string, unknown>,
+        channel: {
+          ...channel,
+          items: items.map(normalizeItem),
+        },
+      };
+    }
 
-    return {
-      rssAttrs: rssAttrs as Record<string, unknown>,
-      channel: {
-        ...channel,
-        items: items.map(normalizeItem),
-      },
-    };
+    // Atom feed
+    if (parsed.feed) {
+      return parseAtomFeed(parsed.feed as Record<string, unknown>);
+    }
+
+    return null;
   } catch {
     return null;
   }
+}
+
+/** 从 Atom entry 中提取 link URL，优先取 rel=alternate */
+function extractAtomLink(links: unknown): string {
+  const linkList = normalizeItems(links);
+  for (const link of linkList) {
+    if (typeof link === 'string') return link;
+    const href = (link as Record<string, unknown>)?.['@_href'] as string | undefined;
+    const rel = (link as Record<string, unknown>)?.['@_rel'] as string | undefined;
+    if (href && (!rel || rel === 'alternate')) return href;
+  }
+  // 最后兜底：取第一个有 href 的 link
+  for (const link of linkList) {
+    if (typeof link !== 'string') {
+      const href = (link as Record<string, unknown>)?.['@_href'] as string | undefined;
+      if (href) return href;
+    }
+  }
+  return '';
+}
+
+/** 解析 Atom feed 为 ParsedRss 统一格式 */
+function parseAtomFeed(feed: Record<string, unknown>): ParsedRss | null {
+  const entries = normalizeItems(feed.entry);
+  if (!entries.length) return null;
+
+  const feedLink = extractAtomLink(feed.link);
+  const items = entries.map((entry: Record<string, unknown>) => {
+    const entryLink = extractAtomLink(entry.link);
+
+    // Atom 的 summary 可能含 HTML（type="html"），直接作为 description
+    let description = '';
+    const summary = entry.summary;
+    if (typeof summary === 'string') {
+      description = summary;
+    } else if (summary && typeof summary === 'object') {
+      description = (summary as Record<string, unknown>)['#text'] as string
+        || (summary as Record<string, unknown>)[CDATA_KEY] as string
+        || '';
+    }
+
+    // content 字段也可能存在
+    let content = '';
+    const rawContent = entry.content ?? entry['content:encoded'];
+    if (typeof rawContent === 'string') {
+      content = rawContent;
+    } else if (rawContent && typeof rawContent === 'object') {
+      content = (rawContent as Record<string, unknown>)['#text'] as string
+        || (rawContent as Record<string, unknown>)[CDATA_KEY] as string
+        || '';
+    }
+
+    return {
+      title: (entry.title as string) ?? '',
+      description: description || content,
+      link: entryLink,
+      pubDate: (entry.published ?? entry.updated) as string ?? '',
+      guid: (entry.id as string) ?? entryLink,
+    } as ParsedRssItem;
+  });
+
+  return {
+    rssAttrs: { '@_version': '2.0' },
+    channel: {
+      title: (feed.title as string) ?? '',
+      description: (feed.subtitle as string) ?? '',
+      link: feedLink,
+      language: (feed['@_xml:lang'] as string) ?? '',
+      items: items.map(normalizeItem),
+    } as ParsedRssChannel,
+  };
 }
 
 /**
