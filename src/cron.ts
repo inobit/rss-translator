@@ -17,7 +17,7 @@ import {
 import { createLogger } from "./utils/logger";
 
 /** 每次运行最多预缓存的文章数（默认值） */
-const DEFAULT_MAX_ARTICLES = 10;
+const DEFAULT_MAX_ARTICLES = 5;
 
 /**
  * scheduled 事件处理器
@@ -29,21 +29,21 @@ export async function handleScheduled(
   const logger = createLogger(env);
   logger.info(`Cron triggered: ${event.cron}`);
   switch (event.cron) {
-    case "0 */1 * * *":
+    case "*/10 * * * *":
       // CASE: 对应 wrangler.toml 第一个 cron，修改时两边同步
-      // 每 2 小时整点：预缓存文章正文
+      // 每 10 分钟：预缓存文章正文
       await preCacheArticles(env);
       break;
-    case "0 9,3 * * *":
+    case "0 */1 * * *":
       // CASE: 对应 wrangler.toml 第二个 cron，修改时两边同步
-      // 每天 UTC 1:00/9:00/17:00（北京时间 9:00/17:00/次日 1:00）：预缓存 RSS 元信息
+      // 每小时整点：预缓存 RSS 元信息
       await preCacheRssMetadata(env);
       break;
   }
 }
 
 /**
- * 预缓存翻译后的文章正文（每 2 小时）
+ * 预缓存翻译后的文章正文（每 10 分钟）
  */
 export async function preCacheArticles(env: WorkerEnv): Promise<void> {
   const logger = createLogger(env);
