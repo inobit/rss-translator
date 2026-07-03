@@ -3,6 +3,7 @@ import type { WorkerEnv } from './types';
 import { authMiddleware } from './middleware/auth';
 import { registerRssRoute } from './routes/rss';
 import { registerRawRoute } from './routes/raw';
+import { registerRefreshRoute } from './routes/refresh';
 import { handleScheduled } from './cron';
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
@@ -18,17 +19,19 @@ app.get('/health', (c) => {
 // 需要鉴权的端点
 app.use('/rss', authMiddleware);
 app.use('/raw', authMiddleware);
+app.use('/refresh', authMiddleware);
 
 registerRssRoute(app);
 registerRawRoute(app);
+registerRefreshRoute(app);
 
 export default {
   fetch: app.fetch,
   scheduled: async (
-    _event: ScheduledEvent,
+    event: ScheduledEvent,
     env: WorkerEnv,
     _ctx: ExecutionContext,
   ) => {
-    await handleScheduled(env);
+    await handleScheduled(event, env);
   },
 };
