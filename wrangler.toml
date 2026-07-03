@@ -7,7 +7,7 @@ compatibility_date = "2024-04-01"
 # Cron 触发器（修改后请同步更新 src/cron.ts 中 handleScheduled 的 switch case）：
 #   "0 */2 * * *"      — 每 2 小时整点：预缓存文章正文
 #   "0 17,1,9 * * *"   — 每天 UTC 1:00/9:00/17:00（北京时间 9:00/17:00/次日 1:00）：预缓存 RSS 元信息
-crons = ["0 */2 * * *", "0 17,1,9 * * *"]
+crons = ["0 */1 * * *", "0 9,3 * * *"]
 
 [vars]
 LOG_LEVEL = "info"
