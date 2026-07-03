@@ -16,6 +16,8 @@ export async function handleScheduled(
   event: ScheduledEvent,
   env: WorkerEnv,
 ): Promise<void> {
+  const logger = createLogger(env);
+  logger.info(`Cron triggered: ${event.cron}`);
   switch (event.cron) {
     case '0 */2 * * *':
       // CASE: 对应 wrangler.toml 第一个 cron，修改时两边同步
@@ -66,24 +68,27 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
       }
 
       const xml = await resp.text();
+      logger.info(`Fetched RSS for ${source.id}: ${xml.length} bytes`);
       const parsed = parseRssXml(xml);
       if (!parsed) {
         logger.error(`Failed to parse RSS for ${source.id}`);
         continue;
       }
 
-      for (const item of parsed.channel.items) {
+      const items = parsed.channel.items;
+      logger.info(`Parsed ${items.length} articles from ${source.id}`);
+
+      for (const item of items) {
         if (cachedCount >= maxArticles) break;
         if (!item.link) continue;
 
-        // 检查是否已有缓存
         const cached = await getArticleCache(env, item.link, targetLang);
         if (cached) {
-          logger.debug(`Already cached: ${item.link}`);
+          logger.info(`Article cache hit: ${item.link}`);
           continue;
         }
 
-        logger.info(`Pre-caching article: ${item.title.slice(0, 60)}`);
+        logger.info(`Article cache miss, translating: ${item.title.slice(0, 60)}`);
         try {
           const engine = source.engine ?? config.defaults.engine ?? 'deeplx';
           const resolved = resolveProvider(engine, env, config.providers);
@@ -97,7 +102,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
           );
           await setArticleCache(env, item.link, targetLang, html);
           cachedCount++;
-          logger.info(`Cached article ${cachedCount}/${maxArticles}: ${item.link}`);
+          logger.info(`Article cache written ${cachedCount}/${maxArticles}: ${item.link}`);
         } catch (e) {
           const err = e as Error;
           logger.warn(`Failed to pre-cache article: ${err.message}`);
@@ -109,7 +114,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
     }
   }
 
-  logger.info(`Pre-cache run complete: cached ${cachedCount} articles`);
+  logger.info(`Article pre-cache complete: cached ${cachedCount} new articles across ${sources.length} sources`);
 }
 
 /**
@@ -147,14 +152,21 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
       }
 
       const xml = await resp.text();
+      logger.info(`Fetched RSS for ${source.id}: ${xml.length} bytes`);
       const currentHash = hashString(xml);
 
       // hash 比对：原始 RSS 未变则跳过
       const cached = await getRssCache(env, source.id, targetLang);
       if (cached && cached.hash === currentHash) {
-        logger.info(`RSS metadata unchanged, skipping: ${source.id}`);
+        logger.info(`RSS metadata cache hit (hash unchanged): ${source.id}`);
         skippedCount++;
         continue;
+      }
+
+      if (!cached) {
+        logger.info(`RSS metadata cache miss (no cache): ${source.id}`);
+      } else {
+        logger.info(`RSS metadata cache miss (hash changed): ${source.id}`);
       }
 
       const parsed = parseRssXml(xml);
@@ -164,6 +176,7 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
       }
 
       const { channel } = parsed;
+      logger.info(`Parsed RSS for ${source.id}: ${channel.items.length} items`);
       const channelMeta = getChannelMetadata(channel);
 
       if (source.title) {
@@ -172,6 +185,7 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
 
       // 翻译标题
       if (channel.items.length > 0) {
+        logger.info(`Translating ${channel.items.length} titles for ${source.id}`);
         const titles = channel.items.map((item) => item.title);
 
         const engine = source.engine ?? config.defaults.engine ?? 'deeplx';
@@ -195,18 +209,15 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
         }
       }
 
-      // 构建翻译后的 RSS XML
       const rssXml = buildRssXml(channelMeta as Record<string, unknown>, channel.items, parsed.rssAttrs);
-
-      // 写入缓存
       await setRssCache(env, source.id, targetLang, xml, rssXml);
       updatedCount++;
-      logger.info(`RSS metadata cached: ${source.id}`);
+      logger.info(`RSS metadata cache written: ${source.id}`);
     } catch (e) {
       const err = e as Error;
       logger.error(`Error pre-caching RSS metadata for ${source.id}: ${err.message}`);
     }
   }
 
-  logger.info(`RSS metadata pre-cache complete: updated ${updatedCount}, skipped ${skippedCount}`);
+  logger.info(`RSS metadata pre-cache complete: updated ${updatedCount}, skipped ${skippedCount} across ${sources.length} sources`);
 }
