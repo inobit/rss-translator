@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv, RssSource } from '../types';
 import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
 import { translateTexts, resolveProvider } from '../services/translate';
-import { getConfig, getRssCache, setRssCache, hashString } from '../storage/kv';
+import { getConfig, getRssMeta, setRssMeta, urlHash, RssItemMeta } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
 export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -63,23 +63,7 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     }
 
     const xml = await resp.text();
-
     const refreshCache = c.req.query('refresh') === '1';
-
-    // hash 比对：原始 RSS 未变则返回缓存的翻译 XML
-    const rssCached = refreshCache ? null : await getRssCache(c.env, cacheKey, targetLang);
-    if (rssCached) {
-      const currentHash = hashString(xml);
-      if (rssCached.hash === currentHash) {
-        logger.info(`Serving cached RSS for: ${cacheKey}`);
-        return new Response(rssCached.xml, {
-          headers: {
-            'Content-Type': 'application/rss+xml; charset=utf-8',
-            'Cache-Control': 'public, max-age=300',
-          },
-        });
-      }
-    }
 
     const parsed = parseRssXml(xml);
     if (!parsed) {
@@ -89,28 +73,89 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     const { channel } = parsed;
     const channelMeta = getChannelMetadata(channel);
 
-    // 自定义 RSS 标题
     if (source.title) {
       channelMeta.title = source.title;
     }
 
-    // 处理翻译
+    // 翻译：从 per-source 聚合缓存取，命中跳过 LLM，未命中批量翻译后合并写回
     if (source.translate && channel.items.length > 0) {
-      const titles = channel.items.map((item) => item.title);
+      const metaCache = refreshCache ? null : await getRssMeta(c.env, cacheKey, targetLang);
+      const cachedItems: Record<number, RssItemMeta> = {}; // index → cached meta
 
-      const translatedTitles = await translateTexts({
-        engine: effectiveEngine,
-        texts: titles,
-        targetLang,
-        sourceLang: 'EN',
-        env: c.env,
-        prompt: config?.llm_prompt,
-        llm: llmConfig,
-        deeplx: deeplxConfig,
-      });
+      if (metaCache) {
+        for (let i = 0; i < channel.items.length; i++) {
+          const item = channel.items[i];
+          if (item.link) {
+            const hash = urlHash(item.link);
+            const cached = metaCache[hash];
+            if (cached) cachedItems[i] = cached;
+          }
+        }
+      }
 
+      // 收集未命中（需 LLM 翻译）的条目
+      const uncached: { index: number; title: string; description: string }[] = [];
       for (let i = 0; i < channel.items.length; i++) {
-        channel.items[i].title = translatedTitles[i] ?? channel.items[i].title;
+        if (!cachedItems[i]) {
+          uncached.push({
+            index: i,
+            title: channel.items[i].title,
+            description: channel.items[i].description || '',
+          });
+        }
+      }
+
+      if (uncached.length > 0) {
+        const titleResults = await translateTexts({
+          engine: effectiveEngine,
+          texts: uncached.map(u => u.title),
+          targetLang, sourceLang: 'EN',
+          env: c.env, prompt: config?.llm_prompt,
+          llm: llmConfig, deeplx: deeplxConfig,
+        });
+
+        const descResults = await translateTexts({
+          engine: effectiveEngine,
+          texts: uncached.map(u => u.description),
+          targetLang, sourceLang: 'EN',
+          env: c.env, prompt: config?.llm_prompt,
+          llm: llmConfig, deeplx: deeplxConfig,
+        });
+
+        for (let j = 0; j < uncached.length; j++) {
+          const idx = uncached[j].index;
+          cachedItems[idx] = {
+            title: titleResults[j] ?? channel.items[idx].title,
+            description: descResults[j] || channel.items[idx].description || '',
+          };
+        }
+      }
+
+      // 应用翻译到 channel.items
+      for (let i = 0; i < channel.items.length; i++) {
+        const translated = cachedItems[i];
+        if (translated) {
+          if (translated.title) channel.items[i].title = translated.title;
+          if (channel.items[i].description && translated.description) {
+            channel.items[i].description = translated.description;
+          }
+        }
+      }
+
+      // 异步写回聚合缓存（合并新翻译条目）
+      if (uncached.length > 0 && !refreshCache) {
+        const merged = { ...(metaCache || {}) };
+        for (let i = 0; i < channel.items.length; i++) {
+          const item = channel.items[i];
+          if (item.link) {
+            const hash = urlHash(item.link);
+            const meta = cachedItems[i];
+            if (meta) merged[hash] = meta;
+          }
+        }
+        c.executionCtx.waitUntil(
+          setRssMeta(c.env, cacheKey, targetLang, merged),
+        );
       }
     }
 
@@ -132,11 +177,6 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     });
 
     const rssXml = buildRssXml(channelMeta as Record<string, unknown>, itemsOutput, parsed.rssAttrs);
-
-    // 异步写 RSS 缓存
-    c.executionCtx.waitUntil(
-      setRssCache(c.env, cacheKey, targetLang, xml, rssXml),
-    );
 
     return new Response(rssXml, {
       headers: {

@@ -1,7 +1,7 @@
 import type { WorkerEnv } from './types';
 import { getConfig } from './storage/kv';
-import { parseRssXml, buildRssXml, getChannelMetadata } from './services/rss';
-import { getArticleCache, setArticleCache, getRssCache, setRssCache, hashString } from './storage/kv';
+import { parseRssXml } from './services/rss';
+import { getArticleCache, setArticleCache, getRssMeta, setRssMeta, urlHash } from './storage/kv';
 import { fetchAndTranslatePage } from './services/content';
 import { resolveProvider, translateTexts } from './services/translate';
 import { createLogger } from './utils/logger';
@@ -118,8 +118,8 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
 }
 
 /**
- * 预缓存翻译后的 RSS 元信息（标题翻译）
- * 逻辑与 /rss 路由一致：获取原始 RSS → hash 比对缓存 → 翻译标题 → 构建 XML → 写入缓存
+ * 预缓存翻译后的 RSS 标题和描述
+ * per-source 聚合缓存：一个 source 一条 KV，value 内 { urlHash → { title, description } }
  */
 export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
   const logger = createLogger(env);
@@ -153,21 +153,6 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
 
       const xml = await resp.text();
       logger.info(`Fetched RSS for ${source.id}: ${xml.length} bytes`);
-      const currentHash = hashString(xml);
-
-      // hash 比对：原始 RSS 未变则跳过
-      const cached = await getRssCache(env, source.id, targetLang);
-      if (cached && cached.hash === currentHash) {
-        logger.info(`RSS metadata cache hit (hash unchanged): ${source.id}`);
-        skippedCount++;
-        continue;
-      }
-
-      if (!cached) {
-        logger.info(`RSS metadata cache miss (no cache): ${source.id}`);
-      } else {
-        logger.info(`RSS metadata cache miss (hash changed): ${source.id}`);
-      }
 
       const parsed = parseRssXml(xml);
       if (!parsed) {
@@ -177,42 +162,61 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
 
       const { channel } = parsed;
       logger.info(`Parsed RSS for ${source.id}: ${channel.items.length} items`);
-      const channelMeta = getChannelMetadata(channel);
 
-      if (source.title) {
-        channelMeta.title = source.title;
-      }
+      // 读取 per-source 聚合缓存
+      const metaCache = await getRssMeta(env, source.id, targetLang) || {};
 
-      // 翻译标题
-      if (channel.items.length > 0) {
-        logger.info(`Translating ${channel.items.length} titles for ${source.id}`);
-        const titles = channel.items.map((item) => item.title);
-
-        const engine = source.engine ?? config.defaults.engine ?? 'deeplx';
-        const resolved = resolveProvider(engine, env, config.providers);
-        const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
-        const deeplxConfig = resolved?.type === 'deeplx' ? { endpoint: resolved.endpoint, apiKey: resolved.apiKey } : undefined;
-
-        const translatedTitles = await translateTexts({
-          engine,
-          texts: titles,
-          targetLang,
-          sourceLang: 'EN',
-          env,
-          prompt: config.llm_prompt,
-          llm: llmConfig,
-          deeplx: deeplxConfig,
-        });
-
-        for (let i = 0; i < channel.items.length; i++) {
-          channel.items[i].title = translatedTitles[i] ?? channel.items[i].title;
+      // 收集未缓存的条目
+      const uncached: { index: number; title: string; description: string }[] = [];
+      for (let i = 0; i < channel.items.length; i++) {
+        const item = channel.items[i];
+        if (item.link && !metaCache[urlHash(item.link)]) {
+          uncached.push({
+            index: i,
+            title: item.title,
+            description: item.description || '',
+          });
         }
       }
 
-      const rssXml = buildRssXml(channelMeta as Record<string, unknown>, channel.items, parsed.rssAttrs);
-      await setRssCache(env, source.id, targetLang, xml, rssXml);
+      if (uncached.length === 0) {
+        logger.info(`All items cached for ${source.id}, skipping`);
+        skippedCount++;
+        continue;
+      }
+
+      logger.info(`${uncached.length}/${channel.items.length} items need translation for ${source.id}`);
+
+      const engine = source.engine ?? config.defaults.engine ?? 'deeplx';
+      const resolved = resolveProvider(engine, env, config.providers);
+      const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
+      const deeplxConfig = resolved?.type === 'deeplx' ? { endpoint: resolved.endpoint, apiKey: resolved.apiKey } : undefined;
+
+      const titleResults = await translateTexts({
+        engine, texts: uncached.map(u => u.title), targetLang, sourceLang: 'EN',
+        env, prompt: config.llm_prompt, llm: llmConfig, deeplx: deeplxConfig,
+      });
+
+      const descResults = await translateTexts({
+        engine, texts: uncached.map(u => u.description), targetLang, sourceLang: 'EN',
+        env, prompt: config.llm_prompt, llm: llmConfig, deeplx: deeplxConfig,
+      });
+
+      // 合并新翻译条目到缓存
+      for (let j = 0; j < uncached.length; j++) {
+        const item = channel.items[uncached[j].index];
+        if (item.link) {
+          metaCache[urlHash(item.link)] = {
+            title: titleResults[j] ?? item.title,
+            description: descResults[j] || item.description || '',
+          };
+        }
+      }
+
+      // 一次性写回聚合缓存
+      await setRssMeta(env, source.id, targetLang, metaCache);
       updatedCount++;
-      logger.info(`RSS metadata cache written: ${source.id}`);
+      logger.info(`RSS metadata cached for ${source.id}: ${uncached.length} items`);
     } catch (e) {
       const err = e as Error;
       logger.error(`Error pre-caching RSS metadata for ${source.id}: ${err.message}`);

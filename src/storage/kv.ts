@@ -8,8 +8,15 @@ const ARTICLE_CACHE_PREFIX = 'cache:article:';
 const ARTICLE_CACHE_VERSION = 'v1';
 const ARTICLE_CACHE_TTL = 7 * 24 * 60 * 60; // 7 天
 
-const RSS_CACHE_PREFIX = 'cache:rss:';
-const RSS_CACHE_VERSION = 'v2';
+const RSS_META_PREFIX = 'cache:rss:';
+const RSS_META_VERSION = 'v3';
+
+export interface RssItemMeta {
+  title: string;
+  description: string;
+}
+
+const logger = createLogger();
 
 /** 简单字符串哈希（djb2） */
 export function hashString(s: string): string {
@@ -21,7 +28,46 @@ export function hashString(s: string): string {
   return (hash >>> 0).toString(16);
 }
 
-const logger = createLogger();
+/** 对 URL 做 djb2 hash，用作子 key */
+export function urlHash(url: string): string {
+  return hashString(url);
+}
+
+function rssMetaKey(sourceId: string, targetLang: string): string {
+  return `${RSS_META_PREFIX}${RSS_META_VERSION}:${sourceId}:${targetLang}`;
+}
+
+/** 读取某个 source 的翻译元数据缓存（{ urlHash → { title, description } }） */
+export async function getRssMeta(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+): Promise<Record<string, RssItemMeta> | null> {
+  const key = rssMetaKey(sourceId, targetLang);
+  try {
+    const raw = await env.RSS_ARTICLE_CACHE.get(key);
+    if (!raw) return null;
+    logger.debug('RSS meta cache hit', { key });
+    return JSON.parse(raw) as Record<string, RssItemMeta>;
+  } catch (e) {
+    logger.error('Failed to read RSS meta cache', { key, error: e });
+    return null;
+  }
+}
+
+/** 写入某个 source 的翻译元数据缓存 */
+export async function setRssMeta(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+  meta: Record<string, RssItemMeta>,
+): Promise<void> {
+  const key = rssMetaKey(sourceId, targetLang);
+  await env.RSS_ARTICLE_CACHE.put(key, JSON.stringify(meta), {
+    expirationTtl: ARTICLE_CACHE_TTL,
+  });
+  logger.debug('RSS meta cache set', { key, entries: Object.keys(meta).length });
+}
 
 export async function getConfig(env: WorkerEnv): Promise<RssConfig | null> {
   try {
@@ -34,7 +80,6 @@ export async function getConfig(env: WorkerEnv): Promise<RssConfig | null> {
 }
 
 export async function setConfig(_env: WorkerEnv, config: RssConfig): Promise<void> {
-  // 仅用于本地脚本更新配置，线上通过 Dashboard 或 wrangler 变量管理
   console.log(JSON.stringify(config));
 }
 
@@ -52,6 +97,7 @@ export async function deleteArticleCache(
     logger.warn('Failed to delete article cache', { key, error: e });
   }
 }
+
 function articleCacheKey(url: string, targetLang: string): string {
   const hash = hashString(url);
   return `${ARTICLE_CACHE_PREFIX}${ARTICLE_CACHE_VERSION}:${hash}:${targetLang}`;
@@ -87,39 +133,4 @@ export async function setArticleCache(
     expirationTtl: ARTICLE_CACHE_TTL,
   });
   logger.debug('Article cache set', { key });
-}
-
-/** 获取缓存的 RSS（返回 { hash, xml }） */
-export async function getRssCache(
-  env: WorkerEnv,
-  sourceId: string,
-  targetLang: string,
-): Promise<{ hash: string; xml: string } | null> {
-  const key = `${RSS_CACHE_PREFIX}${RSS_CACHE_VERSION}:${sourceId}:${targetLang}`;
-  try {
-    const raw = await env.RSS_ARTICLE_CACHE.get(key);
-    if (!raw) return null;
-    logger.debug('RSS cache hit', { key });
-    return JSON.parse(raw) as { hash: string; xml: string };
-  } catch (e) {
-    logger.error('Failed to read RSS cache', { key, error: e });
-    return null;
-  }
-}
-
-/** 缓存 RSS XML 和其原始内容的 hash */
-export async function setRssCache(
-  env: WorkerEnv,
-  sourceId: string,
-  targetLang: string,
-  originalXml: string,
-  translatedXml: string,
-): Promise<void> {
-  const key = `${RSS_CACHE_PREFIX}${RSS_CACHE_VERSION}:${sourceId}:${targetLang}`;
-  const rawHash = hashString(originalXml);
-  const entry = JSON.stringify({ hash: rawHash, xml: translatedXml });
-  await env.RSS_ARTICLE_CACHE.put(key, entry, {
-    expirationTtl: ARTICLE_CACHE_TTL,
-  });
-  logger.debug('RSS cache set', { key, hash: rawHash });
 }
