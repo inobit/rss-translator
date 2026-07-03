@@ -12,7 +12,9 @@ export interface ArticleImage {
 export type ContentBlock =
   | { type: 'text'; texts: string[] }
   | { type: 'heading'; text: string }
-  | { type: 'image'; image: ArticleImage };
+  | { type: 'image'; image: ArticleImage }
+  | { type: 'disclaimer'; text: string }
+  | { type: 'references'; title: string; items: string[] };
 
 export interface ArticleData {
   title: string;
@@ -705,6 +707,176 @@ function registerExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string):
 }
 
 
+// ================ Towards Data Science 提取器 ================
+
+function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): ArticleData {
+  // 移除广告、newsletter 等噪音
+  $('.ad-section, .wp-block-tds-ad-slot, .tds-cta-box, .tds-subscribe-newsletter').remove();
+  $('[class*="newsletter"], [class*="paywall"]').remove();
+
+  const jsonLd = extractJsonLd($, rawHtml);
+
+  const title = $('h1.wp-block-post-title').first().text().trim()
+    || (jsonLd?.headline as string)
+    || fallbackTitle($);
+
+  const author = $('.wp-block-post-author-name').first().text().trim()
+    || extractPersonName(jsonLd?.author)
+    || extractMeta($, 'meta[name="author"]')
+    || undefined;
+
+  const authorUrl = $('.wp-block-post-author-name__link').first().attr('href')
+    || extractPersonUrl(jsonLd?.author)
+    || undefined;
+
+  const date = $('.wp-block-post-date time[datetime]').first().attr('datetime')
+    || (jsonLd?.datePublished as string)
+    || extractMeta($, 'meta[property="article:published_time"]')
+    || undefined;
+
+  const summary = $('.tds-theme-post-subheading').first().text().trim()
+    || (jsonLd?.description as string)
+    || extractMeta($, 'meta[property="og:description"]')
+    || undefined;
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // 提取 featured image
+  const $featuredImg = $('.wp-block-post-featured-image img').first();
+  if ($featuredImg.length) {
+    const src = $featuredImg.attr('src');
+    const alt = $featuredImg.attr('alt') || '';
+    if (src) {
+      images.push({ src, alt });
+      blocks.push({ type: 'image', image: { src, alt } });
+    }
+  }
+
+  // 从 JSON-LD 或 og:image 降级取题图
+  if (images.length === 0) {
+    const ldThumb = jsonLd?.thumbnailUrl;
+    const ldThumbUrl: string | undefined = Array.isArray(ldThumb)
+      ? (ldThumb[0] as string)
+      : ldThumb as string | undefined;
+    const ogImg = extractMeta($, 'meta[property="og:image"]');
+    const heroUrl = ldThumbUrl || ogImg;
+    if (heroUrl) {
+      images.push({ src: heroUrl, alt: '' });
+      blocks.push({ type: 'image', image: { src: heroUrl, alt: '' } });
+    }
+  }
+
+  // 提取正文
+  const $content = $('.entry-content').first();
+  // 参考文献区检测：遇到 References/Bibliography 等标题后，后续段落归为参考文献（不翻译）
+  let inReferences = false;
+  let refTitle = '';
+  const refItems: string[] = [];
+  const isReferencesHeading = (text: string) =>
+    /^(references?|bibliography|further reading|citations?|works cited|参考文献|参考资料|延伸阅读)\s*:?\s*$/i.test(text);
+
+  if ($content.length) {
+    $content.children().each((_i, el) => {
+      const $el = $(el);
+
+      // 标题
+      if ($el.is('h2, h3, h4') || $el.hasClass('wp-block-heading')) {
+        const text = $el.text().trim();
+        if (isReferencesHeading(text)) {
+          inReferences = true;
+          refTitle = text;
+          return;
+        }
+        if (text && text.length > 2) {
+          blocks.push({ type: 'heading', text });
+        }
+        return;
+      }
+
+      // 段落
+      if ($el.is('p') || $el.hasClass('wp-block-paragraph')) {
+        const html = ($el.html() || '').trim();
+        const text = $el.text().trim();
+        if (!text || text.length <= 10) return;
+        // 参考文献区：保留原文（含 URL），不翻译
+        if (inReferences) {
+          // 保留 <a> 可点击链接（使用原始锚文本），仅清理危险标签并添加 target
+          const $clone = $el.clone();
+          $clone.find('script, style, iframe, object, embed, link, meta').remove();
+          $clone.find('a').each((_j, aEl) => {
+            $(aEl).attr('target', '_blank').attr('rel', 'noopener noreferrer');
+          });
+          const refHtml = ($clone.html() || '').trim();
+          if (refHtml) refItems.push(refHtml);
+          return;
+        }
+        // <em> 包裹的整段内容视为声明/作者注脚，使用特殊样式
+        const isEmphasis = html.startsWith('<em>') && html.endsWith('</em>');
+        if (isEmphasis || $el.hasClass('has-caption-2-font-size')) {
+          blocks.push({ type: 'disclaimer', text });
+        } else {
+          paragraphs.push(text);
+          blocks.push({ type: 'text', texts: [text] });
+        }
+        return;
+      }
+
+      // 参考文献区内的图片/列表等不再提取
+      if (inReferences) return;
+
+      // 图片（Gutenberg image block）
+      if ($el.is('figure') || $el.hasClass('wp-block-image')) {
+        const $img = $el.find('img').first();
+        if ($img.length) {
+          const src = $img.attr('src');
+          const alt = $img.attr('alt') || '';
+          if (src && !images.some(i => i.src === src)) {
+            const img: ArticleImage = { src, alt };
+            images.push(img);
+            blocks.push({ type: 'image', image: img });
+          }
+        }
+        return;
+      }
+
+      // 列表
+      if ($el.is('ul, ol') || $el.hasClass('wp-block-list')) {
+        const items: string[] = [];
+        $el.find('li').each((_j, liEl) => {
+          const text = $(liEl).text().trim();
+          if (text && text.length > 5) items.push(text);
+        });
+        if (items.length > 0) {
+          paragraphs.push(...items);
+          blocks.push({ type: 'text', texts: items });
+        }
+        return;
+      }
+
+      // 代码块跳过
+      if ($el.is('pre') || $el.hasClass('wp-block-code')) return;
+    });
+  }
+
+  // 收集到的参考文献作为独立 block
+  if (refItems.length > 0) {
+    blocks.push({ type: 'references', title: refTitle || 'References', items: refItems });
+  }
+
+  // 正文为空时降级
+  if (blocks.length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+  }
+
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+}
+
+
 // ================ 注册表 ================
 
 const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
@@ -716,6 +888,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'guardian-china': { extract: guardianExtract },
   'mit-news': { extract: mitNewsExtract },
   'theregister-ai': { extract: registerExtract },
+  'tds': { extract: tdsExtract },
 };
 
 
@@ -761,6 +934,11 @@ async function translateArticle(
       if (block.image.alt) toTranslate.push(block.image.alt);
     } else if (block.type === 'heading') {
       toTranslate.push(block.text);
+    } else if (block.type === 'disclaimer') {
+      toTranslate.push(block.text);
+    } else if (block.type === 'references') {
+      // 参考文献条目不翻译（含作者名、期刊名、DOI 等），仅翻译标题
+      if (block.title) toTranslate.push(block.title);
     } else {
       for (const t of block.texts) toTranslate.push(t);
     }
@@ -787,6 +965,10 @@ async function translateArticle(
       if (block.image.alt) block.image.alt = translated[idx++] || block.image.alt;
     } else if (block.type === 'heading') {
       block.text = translated[idx++] || block.text;
+    } else if (block.type === 'disclaimer') {
+      block.text = translated[idx++] || block.text;
+    } else if (block.type === 'references') {
+      if (block.title) block.title = translated[idx++] || block.title;
     } else {
       for (let i = 0; i < block.texts.length; i++) {
         block.texts[i] = translated[idx++] || block.texts[i];
@@ -841,6 +1023,11 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
       </figure>`;
     } else if (block.type === 'heading') {
       bodyHtml += `<h2 class="subheading">${esc(block.text)}</h2>`;
+    } else if (block.type === 'disclaimer') {
+      bodyHtml += `<aside class="disclaimer"><p>${esc(block.text)}</p></aside>`;
+    } else if (block.type === 'references') {
+      const items = block.items.map(it => `<p class="reference-item">${it}</p>`).join('\n');
+      bodyHtml += `<section class="references"><h2 class="references-title">${esc(block.title)}</h2>${items}</section>`;
     } else {
       bodyHtml += block.texts.map(p => `<p>${esc(p)}</p>`).join('\n');
     }
@@ -883,6 +1070,14 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   .article-image .copyright { font-size: 11px; color: #8a8c8e; }
   p { font-size: 18px; line-height: 1.7; margin-bottom: 18px; color: #141414; }
   .subheading { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 32px 0 12px; color: #141414; }
+  .disclaimer { font-size: 13px; font-style: italic; color: #8a8c8e; line-height: 1.6; margin: 28px 0 16px; padding: 14px 16px; background: #f7f7f7; border-radius: 6px; }
+  .disclaimer p { font-size: inherit; color: inherit; margin: 0; }
+  .references { margin: 32px 0 16px; padding: 18px 20px; background: #f7f7f7; border-radius: 6px; }
+  .references-title { font-size: 18px; font-weight: 700; margin: 0 0 12px; color: #141414; }
+  .reference-item { font-size: 13px; line-height: 1.6; color: #545658; margin: 0 0 8px; word-break: break-word; }
+  .reference-item:last-child { margin-bottom: 0; }
+  .reference-item a { color: #5A7690; text-decoration: none; word-break: break-all; }
+  .reference-item a:hover { text-decoration: underline; }
   .original-link { margin-top: 32px; padding-top: 16px; border-top: 1px solid #e6e6e6; font-size: 14px; }
   .original-link a { color: #545658; text-decoration: none; }
   .original-link a:hover { text-decoration: underline; }
