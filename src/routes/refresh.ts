@@ -7,26 +7,32 @@ export function registerRefreshRoute(app: Hono<{ Bindings: WorkerEnv }>) {
   app.get('/refresh', async (c) => {
     const logger = createLogger(c.env);
     const type = c.req.query('type');
+    const startedAt = Date.now();
 
-    if (type === 'rss') {
-      logger.info('Manual refresh: RSS metadata pre-cache triggered');
-      c.executionCtx.waitUntil(preCacheRssMetadata(c.env));
-      return c.json({ status: 'started', message: 'RSS metadata pre-cache triggered' });
+    try {
+      if (type === 'rss') {
+        logger.info('Manual refresh: RSS metadata pre-cache triggered');
+        await preCacheRssMetadata(c.env);
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        return c.json({ status: 'done', message: 'RSS metadata pre-cache completed', elapsed_sec: elapsed });
+      }
+
+      if (type === 'articles') {
+        logger.info('Manual refresh: article pre-cache triggered');
+        await preCacheArticles(c.env);
+        const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+        return c.json({ status: 'done', message: 'Article pre-cache completed', elapsed_sec: elapsed });
+      }
+
+      logger.info('Manual refresh: full pre-cache triggered');
+      await preCacheRssMetadata(c.env);
+      await preCacheArticles(c.env);
+      const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+      return c.json({ status: 'done', message: 'Full pre-cache completed', elapsed_sec: elapsed });
+    } catch (e) {
+      const err = e as Error;
+      logger.error(`Manual refresh failed: ${err.message}`);
+      return c.json({ status: 'error', message: err.message }, 500);
     }
-
-    if (type === 'articles') {
-      logger.info('Manual refresh: article pre-cache triggered');
-      c.executionCtx.waitUntil(preCacheArticles(c.env));
-      return c.json({ status: 'started', message: 'Article pre-cache triggered' });
-    }
-
-    logger.info('Manual refresh: full pre-cache triggered');
-    c.executionCtx.waitUntil(
-      Promise.all([
-        preCacheRssMetadata(c.env),
-        preCacheArticles(c.env),
-      ]),
-    );
-    return c.json({ status: 'started', message: 'Full pre-cache triggered' });
   });
 }
