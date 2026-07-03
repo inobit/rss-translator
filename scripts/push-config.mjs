@@ -31,7 +31,7 @@ try {
 
   const remote = process.argv.includes('--local') ? '' : '--remote';
   execSync(
-    `npx wrangler kv key put --namespace-id=e47f4fc3903443f6bc8e359928ab5b5c "config" --path="${tempPath}" ${remote}`,
+    `wrangler kv key put --namespace-id=e47f4fc3903443f6bc8e359928ab5b5c "config" --path="${tempPath}" ${remote}`,
     { stdio: 'inherit', cwd: projectRoot },
   );
   console.log('✅ Config pushed to RSS_CONFIG KV');
