@@ -4,8 +4,10 @@
 # 线上通过 RSS_CONFIG KV namespace 下发
 
 defaults:
-  engine: deepseek # 默认翻译引擎
+  engines: # 默认翻译引擎链，按顺序尝试，失败自动流转
+    - deepseek
   max_articles_per_run: 20 # 每次 cron 最多缓存文章数
+  max_input_tokens: 8192 # 最大输入 token 数
   target_lang: ZH # 目标语言
 
 providers:
@@ -14,10 +16,24 @@ providers:
   #   type: deeplx
   #   endpoint: https://api.deeplx.org
 
+  # Cloudflare AI 翻译（需设置 CLOUDFLARE_API_KEY secret）
+  # cfai:
+  #   type: cloudflare
+  #   endpoint: https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/run
+  #   model: "@cf/meta/m2m100-1.2b"
+  #   api_key_name: CLOUDFLARE_API_KEY
+
+  # Cloudflare Workers AI LLM（需设置 CLOUDFLARE_API_KEY secret，与 cfai 共用 key）
+  # cfllm:
+  #   endpoint: https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/run/@cf/zai-org/glm-4.7-flash
+  #   model: ""  # 模型已在 URL 中，不需要在 body 发送
+  #   api_key_name: CLOUDFLARE_API_KEY
+
   # DeepSeek（LLM，需设置 DEEPSEEK_API_KEY secret）
   deepseek:
     endpoint: https://api.deepseek.com/v1/chat/completions
     model: deepseek-v4-flash
+    max_input_tokens: 1000000
 
 sources:
   - id: example-source
@@ -28,7 +44,7 @@ sources:
       - example.com
     translate: true # 是否翻译 RSS 标题
     translate_body: true # 是否翻译正文 + 改写 link
-    engine: deepseek # 指定翻译引擎（可选，默认用 defaults.engine）
+    # engines: [deepseek] # 可选，用 defaults.engines
   - id: bbc-world
     name: BBC World
     url: https://feeds.bbci.co.uk/news/world/rss.xml

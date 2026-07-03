@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import { createLogger } from '../utils/logger';
-import type { WorkerEnv } from '../types';
+import type { WorkerEnv, ResolvedProvider } from '../types';
 import { translateTexts, type LlmProviderConfig } from './translate';
 
 export interface ArticleImage {
@@ -919,6 +919,9 @@ async function translateArticle(
   env: WorkerEnv,
   engine: string,
   llm?: LlmProviderConfig,
+  maxInputTokens?: number,
+  batchDelayMs?: number,
+  fallbackProviders?: ResolvedProvider[],
 ): Promise<ArticleData> {
   const toTranslate: string[] = [];
 
@@ -951,6 +954,9 @@ async function translateArticle(
     translated = await translateTexts({
       engine, texts: toTranslate, targetLang: 'ZH',
       sourceLang: 'EN', env, llm,
+      maxInputTokens,
+      batchDelayMs,
+      fallbackProviders,
     });
   } catch { return article; }
 
@@ -1109,6 +1115,9 @@ export async function fetchAndTranslatePage(
   sourceId?: string,
   engine?: string,
   llm?: LlmProviderConfig,
+  maxInputTokens?: number,
+  batchDelayMs?: number,
+  fallbackProviders?: ResolvedProvider[],
 ): Promise<string> {
   const logger = createLogger(env);
 
@@ -1122,7 +1131,7 @@ export async function fetchAndTranslatePage(
   const article = await extractArticle(html, sourceId);
   logger.info(`Extracted: title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
 
-  const translated = await translateArticle(article, env, engine ?? 'llm', llm);
+  const translated = await translateArticle(article, env, engine ?? 'deeplx', llm, maxInputTokens, batchDelayMs, fallbackProviders);
 
   return renderArticleHtml(translated, url);
 }

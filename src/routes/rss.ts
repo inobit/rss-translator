@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv, RssSource } from '../types';
 import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
-import { translateTexts, resolveProvider } from '../services/translate';
+import { translateTexts, resolveProviders, getSourceEngines } from '../services/translate';
 import { getConfig, getRssMeta, setRssMeta, urlHash, RssItemMeta } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
@@ -36,21 +36,24 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         name: 'Dynamic Feed',
         url: dynamicUrl!,
         title: c.req.query('title'),
-        translate: config?.defaults?.engine ? true : false,
+        translate: config?.defaults?.engine || config?.defaults?.engines ? true : false,
         translate_body: false,
-        engine: config?.defaults?.engine ?? 'deeplx',
+        engines: config?.defaults?.engines ?? (config?.defaults?.engine ? [config.defaults.engine] : ['deeplx']),
       };
     }
 
-    const effectiveEngine = engineOverride ?? source.engine ?? config?.defaults?.engine ?? 'deeplx';
+    const engines = engineOverride
+      ? [engineOverride]
+      : getSourceEngines(source, config?.defaults);
+    const resolvedProviders = resolveProviders(engines, c.env, config?.providers);
+    const primary = resolvedProviders[0] ?? null;
+    const fallbacks = resolvedProviders.slice(1);
+    const llmConfig = primary?.type === 'llm' ? primary.config : undefined;
+    const deeplxConfig = primary?.type === 'deeplx' ? primary.config : undefined;
+    const cloudflareConfig = primary?.type === 'cloudflare' ? primary.config : undefined;
+    const effectiveEngine = primary?.name ?? engineOverride ?? source.engine ?? config?.defaults?.engine ?? 'deeplx';
     const targetLang = config?.defaults?.target_lang ?? 'ZH';
     const cacheKey = sourceId || '__dynamic__';
-
-    const resolved = effectiveEngine !== 'deeplx' || config?.providers?.[effectiveEngine]
-      ? resolveProvider(effectiveEngine, c.env, config?.providers)
-      : null;
-    const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
-    const deeplxConfig = resolved?.type === 'deeplx' ? { endpoint: resolved.endpoint, apiKey: resolved.apiKey } : undefined;
 
     // 抓取原始 RSS
     logger.info(`Fetching RSS: ${source.url}`);
@@ -106,32 +109,55 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       }
 
       if (uncached.length > 0) {
-        const titleResults = await translateTexts({
-          engine: effectiveEngine,
-          texts: uncached.map(u => u.title),
-          targetLang, sourceLang: 'EN',
-          env: c.env, prompt: config?.llm_prompt,
-          llm: llmConfig, deeplx: deeplxConfig,
-        });
+        // 合并标题和描述为交错列表，按 token 限制自动分批
+        const allTexts: string[] = [];
+        for (const u of uncached) {
+          allTexts.push(u.title);
+          allTexts.push(u.description);
+        }
 
-        const descResults = await translateTexts({
-          engine: effectiveEngine,
-          texts: uncached.map(u => u.description),
-          targetLang, sourceLang: 'EN',
-          env: c.env, prompt: config?.llm_prompt,
-          llm: llmConfig, deeplx: deeplxConfig,
-        });
+        let translated = false;
+        try {
+          const allResults = await translateTexts({
+            engine: effectiveEngine,
+            texts: allTexts,
+            targetLang, sourceLang: 'EN',
+            env: c.env, prompt: config?.llm_prompt,
+            llm: llmConfig, deeplx: deeplxConfig, cloudflare: cloudflareConfig,
+            fallbackProviders: fallbacks.length > 0 ? fallbacks : undefined,
+            maxInputTokens: config?.defaults?.max_input_tokens,
+          });
 
-        for (let j = 0; j < uncached.length; j++) {
-          const idx = uncached[j].index;
-          cachedItems[idx] = {
-            title: titleResults[j] ?? channel.items[idx].title,
-            description: descResults[j] || channel.items[idx].description || '',
-          };
+          for (let j = 0; j < uncached.length; j++) {
+            const idx = uncached[j].index;
+            cachedItems[idx] = {
+              title: allResults[j * 2] ?? channel.items[idx].title,
+              description: allResults[j * 2 + 1] || channel.items[idx].description || '',
+            };
+          }
+          translated = true;
+        } catch (e) {
+          logger.error('RSS metadata translation failed, using originals', e as Error);
+        }
+
+        // 异步写回聚合缓存（仅翻译成功时写入，避免污染缓存）
+        if (translated && !refreshCache) {
+          const merged = { ...(metaCache || {}) };
+          for (let i = 0; i < channel.items.length; i++) {
+            const item = channel.items[i];
+            if (item.link) {
+              const hash = urlHash(item.link);
+              const meta = cachedItems[i];
+              if (meta) merged[hash] = meta;
+            }
+          }
+          c.executionCtx.waitUntil(
+            setRssMeta(c.env, cacheKey, targetLang, merged),
+          );
         }
       }
 
-      // 应用翻译到 channel.items
+      // 应用翻译到 channel.items（KV 缓存命中的 + LLM 翻译成功的）
       for (let i = 0; i < channel.items.length; i++) {
         const translated = cachedItems[i];
         if (translated) {
@@ -140,22 +166,6 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
             channel.items[i].description = translated.description;
           }
         }
-      }
-
-      // 异步写回聚合缓存（合并新翻译条目）
-      if (uncached.length > 0 && !refreshCache) {
-        const merged = { ...(metaCache || {}) };
-        for (let i = 0; i < channel.items.length; i++) {
-          const item = channel.items[i];
-          if (item.link) {
-            const hash = urlHash(item.link);
-            const meta = cachedItems[i];
-            if (meta) merged[hash] = meta;
-          }
-        }
-        c.executionCtx.waitUntil(
-          setRssMeta(c.env, cacheKey, targetLang, merged),
-        );
       }
     }
 

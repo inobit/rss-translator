@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
 import { fetchAndTranslatePage } from '../services/content';
 import { getConfig, getArticleCache, setArticleCache, deleteArticleCache } from '../storage/kv';
-import { resolveProvider } from '../services/translate';
+import { resolveProviders, getSourceEngines } from '../services/translate';
 import { createLogger } from '../utils/logger';
 
 export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -65,11 +65,16 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     try {
       // 缓存未命中，实时翻译并缓存
       logger.info(`Translating on demand: ${decodedUrl}`);
-      const engine = source.engine ?? config?.defaults?.engine ?? 'deeplx';
-      const resolved = resolveProvider(engine, c.env, config?.providers);
-      const llmConfig = resolved?.type === 'llm' ? resolved.config : undefined;
+      const engines = getSourceEngines(source, config?.defaults);
+      const resolvedProviders = resolveProviders(engines, c.env, config?.providers);
+      const primary = resolvedProviders[0] ?? null;
+      const fallbacks = resolvedProviders.slice(1);
+      const llmConfig = primary?.type === 'llm' ? primary.config : undefined;
       const translatedHtml = await fetchAndTranslatePage(
-        decodedUrl, c.env, sourceId || undefined, engine, llmConfig,
+        decodedUrl, c.env, sourceId || undefined, primary?.name, llmConfig,
+        config?.defaults?.max_input_tokens,
+        undefined,
+        fallbacks.length > 0 ? fallbacks : undefined,
       );
 
       // 先删旧缓存（防止配额耗尽后旧缓存残留），再异步写新缓存

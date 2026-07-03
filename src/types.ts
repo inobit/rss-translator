@@ -5,13 +5,40 @@ export type TranslateEngine = string;
 
 /** Provider 配置 */
 export interface TranslateProvider {
-  /** API 类型：deeplx 或 OpenAI 兼容 */
-  type?: 'deeplx' | 'llm';
+  /** API 类型：deeplx、cloudflare 或 OpenAI 兼容 LLM */
+  type?: 'deeplx' | 'cloudflare' | 'llm';
   endpoint: string;
-  /** LLM 才需要，deeplx 不需要 */
+  /** LLM / cloudflare 需要，deeplx 不需要；留空则不在请求体中发送 model（如模型已在 URL 中） */
   model?: string;
-  /** 对应 Cloudflare secret：{NAME}_API_KEY */
+  /** LLM 单次请求最大输入 token 数，超过则分批（默认 8192） */
+  max_input_tokens?: number;
+  /**
+   * 显式指定 Cloudflare secret 名称，优先级高于默认的 {ENGINE_NAME}_API_KEY
+   * 用于多个 provider 共享同一个 API key
+   */
+  api_key_name?: string;
 }
+
+/** LLM provider 解析后的配置 */
+export interface LlmProviderConfig {
+  endpoint: string;
+  model: string;
+  apiKey: string;
+  maxInputTokens?: number;
+}
+
+/** Cloudflare provider 解析后的配置 */
+export interface CloudflareProviderConfig {
+  endpoint: string;
+  model: string;
+  apiKey: string;
+}
+
+/** 解析后的 provider，已注入 API key */
+export type ResolvedProvider =
+  | { name: string; type: 'llm'; config: LlmProviderConfig }
+  | { name: string; type: 'deeplx'; config: { endpoint: string; apiKey: string } }
+  | { name: string; type: 'cloudflare'; config: CloudflareProviderConfig };
 
 /** 翻译语言代码 */
 export type LangCode = 'ZH' | 'EN' | 'JA' | 'KO' | 'FR' | 'DE' | 'ES' | 'PT' | 'IT' | 'NL' | 'PL' | 'RU';
@@ -27,7 +54,10 @@ export interface RssSource {
   domains?: string[];
   translate: boolean;
   translate_body: boolean;
-  engine: TranslateEngine;
+  /** @deprecated 使用 engines 替代，支持多 provider 按顺序失败自动流转 */
+  engine?: TranslateEngine;
+  /** 翻译 provider 列表，按顺序尝试，失败自动流转到下一个 */
+  engines?: TranslateEngine[];
 }
 
 /** KV 中存储的全局配置 */
@@ -37,11 +67,18 @@ export interface RssConfig {
   providers?: Record<string, TranslateProvider>;
   defaults: {
     target_lang: string;
-  engine?: TranslateEngine;
+    /** @deprecated 使用 engines 替代 */
+    engine?: TranslateEngine;
+    /** 默认 provider 列表 */
+    engines?: TranslateEngine[];
     /** 翻译缓存天数，默认 30 */
     cache_ttl_days?: number;
     /** 每次 cron 运行最多预缓存的文章数，默认 10 */
     max_articles_per_run?: number;
+    /** 全局默认 LLM 单次请求最大输入 token 数（provider 级优先，默认 8192） */
+    max_input_tokens?: number;
+    /** cron 任务中 LLM API 调用间的最小间隔（毫秒），仅 cron 生效，在线请求不延迟 */
+    request_interval_ms?: number;
   };
   llm_prompt?: string;
 }
@@ -69,6 +106,21 @@ export interface DeeplxResponse {
   message?: string;
   data?: string;
   alternatives?: string[];
+}
+
+/** Cloudflare AI 翻译响应格式 */
+export interface CloudflareAIResponse {
+  result: {
+    translated_text: string;
+    usage?: {
+      prompt_tokens: number;
+      completion_tokens: number;
+      total_tokens: number;
+    };
+  };
+  success: boolean;
+  errors: unknown[];
+  messages: unknown[];
 }
 
 /** LLM chat completion 消息 */

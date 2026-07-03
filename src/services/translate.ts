@@ -1,23 +1,30 @@
-import type { TranslateEngine, WorkerEnv, DeeplxResponse, LlmResponse, TranslateProvider } from '../types';
+import type { TranslateEngine, WorkerEnv, DeeplxResponse, LlmResponse, CloudflareAIResponse, TranslateProvider, LlmProviderConfig, CloudflareProviderConfig, ResolvedProvider } from '../types';
 import { createLogger } from '../utils/logger';
 
-export interface LlmProviderConfig {
-  endpoint: string;
-  model: string;
-  apiKey: string;
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+export type { LlmProviderConfig, CloudflareProviderConfig, ResolvedProvider };
+
 export interface TranslateOptions {
+  /** 主 engine 名称（日志用） */
   engine: TranslateEngine;
   texts: string[];
   targetLang: string;
   sourceLang?: string;
   env: WorkerEnv;
   prompt?: string;
-  /** 已解析的 LLM provider 配置 */
+  /** 主 provider（已解析） */
   llm?: LlmProviderConfig;
-  /** 已解析的 deeplx provider 配置 */
   deeplx?: { endpoint: string; apiKey: string };
+  cloudflare?: CloudflareProviderConfig;
+  /** 备用 provider 列表，按顺序尝试，失败自动流转 */
+  fallbackProviders?: ResolvedProvider[];
+  /** 全局默认最大输入 token 数（provider 级 maxInputTokens 优先） */
+  maxInputTokens?: number;
+  /** 分批间延迟（毫秒），仅 cron 传入，在线请求不延迟 */
+  batchDelayMs?: number;
 }
 
 /** 根据 engine 名称和配置解析 provider */
@@ -25,15 +32,25 @@ export function resolveProvider(
   engine: string,
   env: WorkerEnv,
   providers?: Record<string, TranslateProvider>,
-): { type: 'llm'; config: LlmProviderConfig } | { type: 'deeplx'; endpoint: string; apiKey: string } | null {
+): { type: 'llm'; config: LlmProviderConfig } | { type: 'deeplx'; config: { endpoint: string; apiKey: string } } | { type: 'cloudflare'; config: CloudflareProviderConfig } | null {
   const provider = providers?.[engine];
   if (provider) {
-    const secretName = `${engine.toUpperCase()}_API_KEY`;
+    const secretName = provider.api_key_name ?? `${engine.replace(/-/g, '_').toUpperCase()}_API_KEY`;
     const apiKey = env[secretName] as string | undefined;
     if (!apiKey) return null;
 
     if (provider.type === 'deeplx') {
-      return { type: 'deeplx', endpoint: provider.endpoint, apiKey };
+      return { type: 'deeplx', config: { endpoint: provider.endpoint, apiKey } };
+    }
+    if (provider.type === 'cloudflare') {
+      return {
+        type: 'cloudflare',
+        config: {
+          endpoint: provider.endpoint,
+          model: provider.model ?? '@cf/meta/m2m100-1.2b',
+          apiKey,
+        },
+      };
     }
     // LLM 类型（默认）
     return {
@@ -42,13 +59,14 @@ export function resolveProvider(
         endpoint: provider.endpoint,
         model: provider.model ?? 'default',
         apiKey,
+        maxInputTokens: provider.max_input_tokens,
       },
     };
   }
 
   // 降级：使用旧版全局环境变量
   if (engine === 'deeplx' && env.DEEPLX_BASE_URL && env.DEEPLX_API_KEY) {
-    return { type: 'deeplx', endpoint: env.DEEPLX_BASE_URL as string, apiKey: env.DEEPLX_API_KEY as string };
+    return { type: 'deeplx', config: { endpoint: env.DEEPLX_BASE_URL as string, apiKey: env.DEEPLX_API_KEY as string } };
   }
   if (env.LLM_ENDPOINT && env.LLM_API_KEY) {
     return {
@@ -63,6 +81,37 @@ export function resolveProvider(
   return null;
 }
 
+/** 解析多个 engine 为 provider 列表（去重，跳过无法解析的） */
+export function resolveProviders(
+  engines: string[],
+  env: WorkerEnv,
+  providers?: Record<string, TranslateProvider>,
+): ResolvedProvider[] {
+  const seen = new Set<string>();
+  const result: ResolvedProvider[] = [];
+  for (const engine of engines) {
+    if (seen.has(engine)) continue;
+    seen.add(engine);
+    const resolved = resolveProvider(engine, env, providers);
+    if (resolved) {
+      result.push({ name: engine, ...resolved });
+    }
+  }
+  return result;
+}
+
+/** 获取 source 的 engines 列表（兼容旧 engine 字段） */
+export function getSourceEngines(
+  source: { engine?: string; engines?: string[] },
+  defaults?: { engine?: string; engines?: string[] },
+): string[] {
+  if (source.engines && source.engines.length > 0) return source.engines;
+  if (source.engine) return [source.engine];
+  if (defaults?.engines && defaults.engines.length > 0) return defaults.engines;
+  if (defaults?.engine) return [defaults.engine];
+  return ['deeplx'];
+}
+
 const LLM_PROMPT_TEMPLATE = `将以下英文新闻内容翻译为中文。要求：
 - 使用新闻体的专业中文
 - 精确传达原意
@@ -70,11 +119,51 @@ const LLM_PROMPT_TEMPLATE = `将以下英文新闻内容翻译为中文。要求
 
 原文：`;
 
+const DEFAULT_MAX_INPUT_TOKENS = 8192;
+
+/** 粗略估算 token 数（1 字符 ≈ 1 token，对中文准确，对英文安全高估） */
+function estimateTokens(text: string): number {
+  return text.length;
+}
+
 /**
  * 批量翻译文本，返回与 texts 顺序一致的翻译结果
- * 文章级缓存由 RSS_ARTICLE_CACHE 负责，此处不独立缓存逐段文本
+ * 支持多 provider 失败自动流转
  */
 export async function translateTexts(opts: TranslateOptions): Promise<string[]> {
+  try {
+    return await translateTextsInternal(opts);
+  } catch (primaryError) {
+    if (!opts.fallbackProviders || opts.fallbackProviders.length === 0) {
+      throw primaryError;
+    }
+    const logger = createLogger(opts.env);
+    logger.warn(`Primary provider failed: ${(primaryError as Error).message}, trying ${opts.fallbackProviders.length} fallback(s)...`);
+
+    let lastError = primaryError;
+    for (const fb of opts.fallbackProviders) {
+      logger.info(`Trying fallback provider "${fb.name}" (${fb.type})`);
+      try {
+        const fbOpts: TranslateOptions = {
+          ...opts,
+          engine: fb.name,
+          llm: fb.type === 'llm' ? fb.config : undefined,
+          deeplx: fb.type === 'deeplx' ? fb.config : undefined,
+          cloudflare: fb.type === 'cloudflare' ? fb.config : undefined,
+          fallbackProviders: undefined, // 防止无限递归
+        };
+        return await translateTextsInternal(fbOpts);
+      } catch (e) {
+        const err = e as Error;
+        lastError = err;
+        logger.warn(`Fallback provider "${fb.name}" (${fb.type}) failed: ${err.message}`);
+      }
+    }
+    throw lastError;
+  }
+}
+
+async function translateTextsInternal(opts: TranslateOptions): Promise<string[]> {
   const { engine, texts, targetLang, sourceLang, env, prompt } = opts;
   const logger = createLogger(env);
   const pendingTexts = texts.filter(t => t);
@@ -84,19 +173,53 @@ export async function translateTexts(opts: TranslateOptions): Promise<string[]> 
   }
 
   logger.info(`Translating ${pendingTexts.length} texts via ${engine}`);
-  let translatedBatch: string[];
 
-  try {
-    if (opts.deeplx) {
-      translatedBatch = await translateViaDeeplx(pendingTexts, targetLang, sourceLang, opts.deeplx);
-    } else {
-      translatedBatch = await translateViaLlm(pendingTexts, targetLang, prompt, opts.llm);
-    }
-  } catch (e) {
-    logger.error('Translation failed, falling back to original text', e);
-    translatedBatch = pendingTexts;
+  if (opts.deeplx) {
+    const translatedBatch = await translateViaDeeplx(pendingTexts, targetLang, sourceLang, opts.deeplx);
+    return mapResults(texts, translatedBatch);
   }
 
+  if (opts.cloudflare) {
+    const translatedBatch = await translateViaCloudflare(pendingTexts, targetLang, sourceLang, opts.cloudflare);
+    return mapResults(texts, translatedBatch);
+  }
+
+  const maxTokens = opts.llm?.maxInputTokens ?? opts.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS;
+  const batches: string[][] = [];
+  let currentBatch: string[] = [];
+  let currentTokens = 0;
+
+  for (const text of pendingTexts) {
+    const tokens = estimateTokens(text);
+    if (currentBatch.length > 0 && currentTokens + tokens > maxTokens) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentTokens = 0;
+    }
+    currentBatch.push(text);
+    currentTokens += tokens;
+  }
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  if (batches.length > 1) {
+    logger.info(`Split into ${batches.length} batches (max ${maxTokens} input tokens)`);
+  }
+
+  const allResults: string[] = [];
+  for (let i = 0; i < batches.length; i++) {
+    if (i > 0 && opts.batchDelayMs && opts.batchDelayMs > 0) {
+      await sleep(opts.batchDelayMs);
+    }
+    const results = await translateViaLlm(batches[i], targetLang, prompt, opts.llm);
+    allResults.push(...results);
+  }
+
+  return mapResults(texts, allResults);
+}
+
+function mapResults(texts: string[], translatedBatch: string[]): string[] {
   const results: string[] = [];
   let pendingIdx = 0;
   for (const text of texts) {
@@ -107,7 +230,6 @@ export async function translateTexts(opts: TranslateOptions): Promise<string[]> 
       results.push('');
     }
   }
-
   return results;
 }
 
@@ -150,6 +272,63 @@ async function translateViaDeeplx(
   return results;
 }
 
+/** 将内部 LangCode 映射为 Cloudflare AI 翻译 API 要求的语言名称 */
+const CLOUDFLARE_LANG_MAP: Record<string, string> = {
+  'ZH': 'chinese',
+  'EN': 'english',
+  'JA': 'japanese',
+  'KO': 'korean',
+  'FR': 'french',
+  'DE': 'german',
+  'ES': 'spanish',
+  'PT': 'portuguese',
+  'IT': 'italian',
+  'NL': 'dutch',
+  'PL': 'polish',
+  'RU': 'russian',
+};
+
+async function translateViaCloudflare(
+  texts: string[],
+  targetLang: string,
+  sourceLang: string | undefined,
+  config: CloudflareProviderConfig,
+): Promise<string[]> {
+  const results: string[] = [];
+  const url = `${config.endpoint}/${config.model}`;
+  for (const text of texts) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify({
+        text,
+        source_lang: sourceLang ? (CLOUDFLARE_LANG_MAP[sourceLang] ?? sourceLang.toLowerCase()) : 'english',
+        target_lang: CLOUDFLARE_LANG_MAP[targetLang] ?? targetLang.toLowerCase(),
+      }),
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.error(`Cloudflare AI request failed: ${resp.status}`, body);
+      throw new Error(`Cloudflare AI translation failed: ${resp.status}`);
+    }
+
+    const data = (await resp.json()) as CloudflareAIResponse;
+
+    if (data.success && data.result?.translated_text) {
+      results.push(data.result.translated_text);
+    } else {
+      console.error('Unexpected Cloudflare AI response', data);
+      throw new Error('Unexpected Cloudflare AI response format');
+    }
+  }
+
+  return results;
+}
+
 async function translateViaLlm(
   texts: string[],
   targetLang: string,
@@ -167,21 +346,25 @@ async function translateViaLlm(
     ? `请将以下内容翻译为${targetLang}，直接返回翻译结果，不要添加任何前缀或说明：\n\n${texts[0]}`
     : `${texts.map((t, i) => `[${i + 1}] ${t}`).join('\n\n')}\n\n请将以上各段分别翻译为${targetLang}，保持编号格式 [1] [2] ... 返回。`;
 
+  const requestBody: Record<string, unknown> = {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ],
+    temperature: 0.3,
+    max_tokens: 32768,
+  };
+  if (provider.model) {
+    requestBody.model = provider.model;
+  }
+
   const resp = await fetch(provider.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${provider.apiKey}`,
     },
-    body: JSON.stringify({
-      model: provider.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
-      ],
-      temperature: 0.3,
-      max_tokens: 32768,
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!resp.ok) {
