@@ -14,7 +14,9 @@ export type ContentBlock =
   | { type: 'heading'; text: string }
   | { type: 'image'; image: ArticleImage }
   | { type: 'disclaimer'; text: string }
-  | { type: 'references'; title: string; items: string[] };
+  | { type: 'references'; title: string; items: string[] }
+  | { type: 'code'; code: string; language?: string }
+  | { type: 'quote'; texts: string[] };
 
 export interface ArticleData {
   title: string;
@@ -144,8 +146,8 @@ function formatDateZh(dateStr: string): string {
     return `${year}年${month}月${day}日`;
   }
 
-  // "June 30, 2026" / "July 2, 2026" (月份在前)
-  const patternMDY = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})/i;
+  // "June 30, 2026" / "July 2, 2026" / "June 23rd, 2026"（月份在前）
+  const patternMDY = /(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})/i;
   const matchMDY = patternMDY.exec(dateStr);
   if (matchMDY) {
     const month = MONTH_NAMES[matchMDY[1].toLowerCase()];
@@ -153,8 +155,8 @@ function formatDateZh(dateStr: string): string {
     return `${matchMDY[3]}年${month}月${day}日`;
   }
 
-  // "2 July 2026" / "30 June 2026" (日期在前)
-  const patternDMY = /(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i;
+  // "2 July 2026" / "30 June 2026" / "23rd June 2026"（日期在前）
+  const patternDMY = /(\d{1,2})(?:st|nd|rd|th)?\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i;
   const matchDMY = patternDMY.exec(dateStr);
   if (matchDMY) {
     const month = MONTH_NAMES[matchDMY[2].toLowerCase()];
@@ -457,58 +459,145 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
   const images: ArticleImage[] = [];
   const paragraphs: string[] = [];
   const blocks: ContentBlock[] = [];
+  const addedImageSrcs = new Set<string>();
 
   // 提取主图（Guardian 使用 picture 元素包裹 lead image）
   const $mainPicture = $('picture').first();
   if ($mainPicture.length) {
     const $img = $mainPicture.find('img').first();
     const src = $img.attr('src');
-    const alt = $img.attr('alt') || '';
+    let alt = $img.attr('alt') || '';
     if (src) {
-      const img: ArticleImage = { src, alt };
-      images.push(img);
-      blocks.push({ type: 'image', image: img });
-    }
-  }
-
-  // 从 og:image 降级取题图
-  if (images.length === 0) {
-    const ogImg = extractMeta($, 'meta[property="og:image"]');
-    if (ogImg) {
-      images.push({ src: ogImg, alt: '' });
-      blocks.push({ type: 'image', image: { src: ogImg, alt: '' } });
-    }
-  }
-
-  // 提取正文段落（Guardian 使用 [class*="article-body"] 包裹正文）
-  const $body = $('[class*="article-body"]').first();
-  if ($body.length) {
-    $body.find('p').each((_i, el) => {
-      const text = $(el).text().trim();
-      if (text && text.length > 10) {
-        paragraphs.push(text);
-        blocks.push({ type: 'text', texts: [text] });
-      }
-    });
-
-    // 提取正文中的图片
-    $body.find('figure').each((_i, el) => {
-      const $img = $(el).find('img').first();
-      if ($img.length) {
-        const src = $img.attr('src');
-        const alt = $img.attr('alt') || '';
-        if (src && !images.some(i => i.src === src)) {
-          images.push({ src, alt });
-          blocks.push({ type: 'image', image: { src, alt } });
+      // Guardian DCR 格式下，主图完整说明通常在 <figure> 的 <figcaption> 中，
+      // <img alt> 可能缺失或不完整，优先取 figcaption 文本
+      const $parentFigure = $mainPicture.closest('figure');
+      if ($parentFigure.length) {
+        const $figcaption = $parentFigure.find('figcaption').first();
+        if ($figcaption.length) {
+          const captionText = $figcaption.text().trim();
+          if (captionText) alt = captionText;
         }
+      }
+      addedImageSrcs.add(src);
+      images.push({ src, alt });
+      blocks.push({ type: 'image', image: { src, alt } });
+    }
+  }
+
+  // 提取正文段落
+  // 优先使用旧版 DCR 格式（[class*="article-body"] 容器）
+  const $body = $('[class*="article-body"]').first();
+
+  // 新版 DCR 格式：无统一容器，通过内容特征元素定位
+  let $dcrContainer: ReturnType<ReturnType<typeof cheerio.load>> | null = null;
+  if (!$body.length) {
+    const $anchor = $('p.dcr-1s160rg, figure[data-spacefinder-type*="ImageBlockElement"], h2.dcr-8418j6').first();
+    if ($anchor.length) {
+      $dcrContainer = $anchor.parent();
+    }
+  }
+
+  const $container = $body.length ? $body : $dcrContainer;
+  if ($container?.length) {
+    $container.children().each((_i, el) => {
+      const $el = $(el);
+      const tag = (el as { tagName?: string }).tagName?.toLowerCase() || '';
+      const cls = $el.attr('class') || '';
+
+      if ($el.is('#sign-in-gate')) return;
+
+      // 图片
+      if (tag === 'figure') {
+        const $img = $el.find('img').first();
+        const $figcaption = $el.find('figcaption').first();
+
+        let imgAlt = '';
+        let imgSrc = '';
+
+        if ($img.length) {
+          imgSrc = $img.attr('src') || '';
+          imgAlt = $img.attr('alt') || '';
+        }
+
+        // figcaption 作为图片说明文字，覆盖 img 的 alt
+        if ($figcaption.length) {
+          const capText = $figcaption.text().trim();
+          if (capText) imgAlt = capText;
+        }
+
+        if (imgSrc && !addedImageSrcs.has(imgSrc)) {
+          addedImageSrcs.add(imgSrc);
+          images.push({ src: imgSrc, alt: imgAlt });
+          blocks.push({ type: 'image', image: { src: imgSrc, alt: imgAlt } });
+        }
+        return;
+      }
+
+      // 子标题
+      if (tag === 'h2' && (cls.includes('dcr-') || cls.includes('article-'))) {
+        const text = $el.text().trim();
+        if (text && text.length > 2) {
+          blocks.push({ type: 'heading', text });
+        }
+        return;
+      }
+
+      // 段落
+      if (tag === 'p') {
+        const text = $el.text().trim();
+        if (text && text.length > 10) {
+          paragraphs.push(text);
+          blocks.push({ type: 'text', texts: [text] });
+        }
+        return;
+      }
+
+      // 列表
+      if (tag === 'ul' || tag === 'ol') {
+        const items: string[] = [];
+        $el.find('li').each((_j, liEl) => {
+          const text = $(liEl).text().trim();
+          if (text && text.length > 5) items.push(text);
+        });
+        if (items.length > 0) {
+          paragraphs.push(...items);
+          blocks.push({ type: 'text', texts: items });
+        }
+        return;
+      }
+
+      // blockquote
+      if (tag === 'blockquote') {
+        const texts: string[] = [];
+        $el.find('p').each((_j, pEl) => {
+          const text = $(pEl).text().trim();
+          if (text && text.length > 2) texts.push(text);
+        });
+        if (texts.length > 0) {
+          paragraphs.push(...texts);
+          blocks.push({ type: 'text', texts });
+        }
+        return;
       }
     });
   }
 
   // 正文为空时降级为 meta 提取
-  if (blocks.length === 0) {
+  if (blocks.filter(b => b.type === 'text' || b.type === 'heading').length === 0) {
+    if (images.length === 0) {
+      const ogImg = extractMeta($, 'meta[property="og:image"]');
+      if (ogImg) {
+        images.push({ src: ogImg, alt: '' });
+        blocks.push({ type: 'image', image: { src: ogImg, alt: '' } });
+      }
+    }
     const fallback = fallbackFromMeta($);
-    images.push(...fallback.images);
+    for (const fb of fallback.blocks) {
+      if (fb.type === 'image' && !addedImageSrcs.has(fb.image.src)) {
+        addedImageSrcs.add(fb.image.src);
+        images.push(fb.image);
+      }
+    }
     paragraphs.push(...fallback.paragraphs);
     blocks.push(...fallback.blocks);
   }
@@ -877,6 +966,299 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
 }
 
 
+// ================ Simon Willison 提取器 ================
+
+/** 从 highlight 类名推断语言，如 highlight-source-shell → shell */
+function inferLanguage($el: ReturnType<ReturnType<typeof cheerio.load>>): string | undefined {
+  const cls = $el.attr('class') || '';
+  const m = /highlight-source-(\w+)/.exec(cls);
+  return m ? m[1] : undefined;
+}
+
+function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
+  // 移除 side column、footer、recent articles 等噪音
+  $('#secondary, #sponsored-banner, #ft, .recent-articles, .entryFooter, .edit-page-link').remove();
+  $('.metabox section[style*="promo"], .metabox .promo').remove();
+
+  const $entry = $('.entry.entryPage').first();
+  const isBeat = $entry.find('.beat').length > 0;
+
+  // 标题
+  let title: string;
+  if (isBeat) {
+    title = $entry.find('.beat-title a').first().text().trim()
+      || $entry.find('h2').first().text().trim()
+      || fallbackTitle($);
+  } else {
+    title = $entry.find('[data-permalink-context] h2').first().text().trim()
+      || $entry.find('h2').first().text().trim()
+      || fallbackTitle($);
+  }
+
+  const author = $('meta[name="author"]').attr('content')?.trim() || undefined;
+
+  // 日期: 兼容 p.mobile-date-eyebrow / p.mobile-date 两种格式
+  const dateStr = $entry.find('p.mobile-date-eyebrow').first().text().trim()
+    || $entry.find('p.mobile-date').first().text().trim()
+    || undefined;
+
+  // beat 条目有 .beat-commit 作为副标题/摘要（如 "An open source multi-tool for..."）
+  // 普通博文没有独立摘要元素，不取
+  let summary: string | undefined;
+  if (isBeat) {
+    const beatCommit = $entry.find('.beat-commit').first().text().trim();
+    if (beatCommit) {
+      summary = beatCommit.replace(/^[—\-–]\s*/, '').trim() || undefined;
+    }
+  }
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // 确定内容容器：beat 页在 .beat-note，博客页在 [data-permalink-context]
+  let $content: ReturnType<ReturnType<typeof cheerio.load>>;
+  if (isBeat) {
+    $content = $entry.find('.beat-note').first();
+  } else {
+    $content = $entry.find('[data-permalink-context]').first();
+    if (!$content.length) $content = $entry;
+  }
+
+  // 收集已添加的图片 src 用于去重
+  const addedImageSrcs = new Set<string>();
+
+  /** 处理单个元素 */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function processElement(el: any): void {
+    const $el = $(el);
+    const tag = (el.tagName || '').toLowerCase();
+
+    // 跳过作为文章标题的 h2（已在外部提取）
+    if (tag === 'h2') return;
+    // 跳过日期行
+    if (tag === 'p' && ($el.hasClass('mobile-date') || $el.hasClass('mobile-date-eyebrow'))) return;
+
+    // 裸 <video>（不在 p/div 内），提取 poster 作为封面图
+    if (tag === 'video') {
+      const poster = $el.attr('poster');
+      const ariaLabel = $el.attr('aria-label') || '';
+      if (poster && !addedImageSrcs.has(poster)) {
+        addedImageSrcs.add(poster);
+        images.push({ src: poster, alt: ariaLabel });
+        blocks.push({ type: 'image', image: { src: poster, alt: ariaLabel } });
+      }
+      return;
+    }
+
+    // highlight 代码块
+    if ($el.hasClass('highlight') || $el.closest('.highlight').length) {
+      if ($el.is('pre')) {
+        const $highlightDiv = $el.closest('.highlight');
+        const language = inferLanguage($highlightDiv.length ? $highlightDiv : $el);
+        blocks.push({ type: 'code', code: $el.text(), language });
+        return;
+      }
+      // highlight div 本身：提取内部 <pre> 内容，不递归处理子元素
+      if (tag === 'div' && $el.hasClass('highlight')) {
+        const $pre = $el.find('pre').first();
+        if ($pre.length) {
+          blocks.push({ type: 'code', code: $pre.text(), language: inferLanguage($el) });
+        }
+        return;
+      }
+    }
+
+    // <pre><code> 代码块
+    if (tag === 'pre') {
+      const $code = $el.find('code').first();
+      blocks.push({ type: 'code', code: $code.length ? $code.text() : $el.text() });
+      return;
+    }
+
+    // <blockquote>
+    if (tag === 'blockquote') {
+      const quoteTexts: string[] = [];
+      $el.children().each((_i, child) => {
+        const $child = $(child);
+        const childTag = (child as { tagName?: string }).tagName?.toLowerCase() || '';
+        // blockquote 内可能是 <p>/<ul>/<ol> 等，取全部文本
+        if (childTag === 'p') {
+          const text = $child.text().trim();
+          if (text && text.length > 2) quoteTexts.push(text);
+        } else if (childTag === 'ul' || childTag === 'ol') {
+          $child.find('li').each((_j, liEl) => {
+            const text = $(liEl).text().trim();
+            if (text && text.length > 5) quoteTexts.push(`• ${text}`);
+          });
+        }
+      });
+      if (quoteTexts.length > 0) {
+        paragraphs.push(...quoteTexts);
+        blocks.push({ type: 'quote', texts: quoteTexts });
+      }
+      return;
+    }
+
+    // 标题
+    if (['h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
+      const text = $el.text().trim();
+      if (text && text.length > 2) {
+        blocks.push({ type: 'heading', text });
+      }
+      return;
+    }
+
+    // 段落（含内嵌 <video>/<img> 的段落）
+    if (tag === 'p') {
+      // 段落内嵌图片
+      const $img = $el.find('img').first();
+      if ($img.length) {
+        const src = $img.attr('src');
+        const alt = $img.attr('alt') || '';
+        if (src && !addedImageSrcs.has(src)) {
+          addedImageSrcs.add(src);
+          const img: ArticleImage = { src, alt };
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
+        }
+        // 如果段落内只有图片没有文字，直接返回
+        const textWithoutImg = $el.clone().find('img, video').remove().end().text().trim();
+        if (!textWithoutImg) return;
+      }
+      // 段落内嵌视频
+      const $video = $el.find('video').first();
+      if ($video.length) {
+        const poster = $video.attr('poster');
+        const ariaLabel = $video.attr('aria-label') || '';
+        if (poster && !addedImageSrcs.has(poster)) {
+          addedImageSrcs.add(poster);
+          const img: ArticleImage = { src: poster, alt: ariaLabel };
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
+        }
+        // 提取视频前后的文字
+        const $clone = $el.clone();
+        $clone.find('video, img').remove();
+        const text = $clone.text().trim();
+        if (text && text.length > 10) {
+          paragraphs.push(text);
+          blocks.push({ type: 'text', texts: [text] });
+        }
+        return;
+      }
+
+      const text = $el.text().trim();
+      if (text && text.length > 10) {
+        paragraphs.push(text);
+        blocks.push({ type: 'text', texts: [text] });
+      }
+      return;
+    }
+
+    // 列表
+    if (tag === 'ul' || tag === 'ol') {
+      const items: string[] = [];
+      $el.find('li').each((_j, liEl) => {
+        const text = $(liEl).text().trim();
+        if (text && text.length > 5) items.push(text);
+      });
+      if (items.length > 0) {
+        paragraphs.push(...items);
+        blocks.push({ type: 'text', texts: items });
+      }
+      return;
+    }
+
+    // 图表
+    if (tag === 'table') {
+      const rows: string[] = [];
+      $el.find('tr').each((_j, trEl) => {
+        const cells: string[] = [];
+        $(trEl).find('th, td').each((_k, cellEl) => {
+          cells.push($(cellEl).text().trim());
+        });
+        if (cells.length > 0) rows.push(cells.join(' | '));
+      });
+      if (rows.length > 0) {
+        const tableText = rows.join('\n');
+        paragraphs.push(tableText);
+        blocks.push({ type: 'text', texts: [tableText] });
+      }
+      return;
+    }
+
+    // div/figure/picture 包装器（含 img 或 video）
+    if (tag === 'div' || tag === 'figure' || tag === 'picture') {
+      // video poster 作为封面图
+      const $video = $el.find('video').first();
+      if ($video.length) {
+        const poster = $video.attr('poster');
+        const ariaLabel = $video.attr('aria-label') || '';
+        if (poster && !addedImageSrcs.has(poster)) {
+          addedImageSrcs.add(poster);
+          images.push({ src: poster, alt: ariaLabel });
+          blocks.push({ type: 'image', image: { src: poster, alt: ariaLabel } });
+        }
+        return;
+      }
+      // 图片
+      const $img = $el.find('img').first();
+      if ($img.length) {
+        const src = $img.attr('src');
+        const alt = $img.attr('alt') || '';
+        if (src && !addedImageSrcs.has(src)) {
+          addedImageSrcs.add(src);
+          images.push({ src, alt });
+          blocks.push({ type: 'image', image: { src, alt } });
+        }
+        return;
+      }
+    }
+
+    // 独立 <img>（不在 p/div/figure 内）
+    if (tag === 'img') {
+      const src = $el.attr('src');
+      const alt = $el.attr('alt') || '';
+      if (src && !addedImageSrcs.has(src)) {
+        addedImageSrcs.add(src);
+        images.push({ src, alt });
+        blocks.push({ type: 'image', image: { src, alt } });
+      }
+      return;
+    }
+
+    // 递归处理子元素（保持文档顺序）
+    $el.children().each((_i, child) => {
+      processElement(child);
+    });
+  }
+
+  $content.children().each((_i, el) => {
+    processElement(el);
+  });
+
+  // 如果内容中没找到图片，用 og:image 作为题图放在最前面
+  if (images.length === 0) {
+    const ogImage = $('meta[property="og:image"]').attr('content');
+    if (ogImage) {
+      images.push({ src: ogImage, alt: '' });
+      blocks.unshift({ type: 'image', image: { src: ogImage, alt: '' } });
+    }
+  }
+
+  // 正文为空时降级
+  if (blocks.filter(b => b.type === 'text').length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+  }
+
+  return { title, author, date: dateStr, summary, images, paragraphs, blocks };
+}
+
+
 // ================ 注册表 ================
 
 const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
@@ -889,6 +1271,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'mit-news': { extract: mitNewsExtract },
   'theregister-ai': { extract: registerExtract },
   'tds': { extract: tdsExtract },
+  'simonw': { extract: simonwExtract },
 };
 
 
@@ -942,6 +1325,10 @@ async function translateArticle(
     } else if (block.type === 'references') {
       // 参考文献条目不翻译（含作者名、期刊名、DOI 等），仅翻译标题
       if (block.title) toTranslate.push(block.title);
+    } else if (block.type === 'code') {
+      // 代码块不翻译
+    } else if (block.type === 'quote') {
+      for (const t of block.texts) toTranslate.push(t);
     } else {
       for (const t of block.texts) toTranslate.push(t);
     }
@@ -975,6 +1362,12 @@ async function translateArticle(
       block.text = translated[idx++] || block.text;
     } else if (block.type === 'references') {
       if (block.title) block.title = translated[idx++] || block.title;
+    } else if (block.type === 'code') {
+      // 代码块不翻译，不消耗 idx
+    } else if (block.type === 'quote') {
+      for (let i = 0; i < block.texts.length; i++) {
+        block.texts[i] = translated[idx++] || block.texts[i];
+      }
     } else {
       for (let i = 0; i < block.texts.length; i++) {
         block.texts[i] = translated[idx++] || block.texts[i];
@@ -1034,21 +1427,14 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
     } else if (block.type === 'references') {
       const items = block.items.map(it => `<p class="reference-item">${it}</p>`).join('\n');
       bodyHtml += `<section class="references"><h2 class="references-title">${esc(block.title)}</h2>${items}</section>`;
+    } else if (block.type === 'code') {
+      const langClass = block.language ? ` class="language-${esc(block.language)}"` : '';
+      bodyHtml += `<pre class="code-block"><code${langClass}>${esc(block.code)}</code></pre>`;
+    } else if (block.type === 'quote') {
+      bodyHtml += `<blockquote class="article-quote">${block.texts.map(t => `<p>${esc(t)}</p>`).join('\n')}</blockquote>`;
     } else {
       bodyHtml += block.texts.map(p => `<p>${esc(p)}</p>`).join('\n');
     }
-  }
-
-  for (const img of article.images) {
-    if (bodyHtml.includes(esc(img.src))) continue;
-    bodyHtml += `<figure class="article-image">
-      <img src="${esc(img.src)}" alt="${esc(img.alt)}" loading="lazy">
-      ${img.alt ? `<figcaption>${esc(img.alt)}</figcaption>` : ''}
-    </figure>`;
-  }
-  for (const p of article.paragraphs) {
-    if (bodyHtml.includes(esc(p.slice(0, 40)))) continue;
-    bodyHtml += `<p>${esc(p)}</p>`;
   }
 
   return `<!DOCTYPE html>
@@ -1078,6 +1464,11 @@ function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   .subheading { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 32px 0 12px; color: #141414; }
   .disclaimer { font-size: 13px; font-style: italic; color: #8a8c8e; line-height: 1.6; margin: 28px 0 16px; padding: 14px 16px; background: #f7f7f7; border-radius: 6px; }
   .disclaimer p { font-size: inherit; color: inherit; margin: 0; }
+  .code-block { margin: 20px 0; padding: 16px; background: #1e1e1e; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.55; }
+  .code-block code { font-family: "SF Mono", Menlo, Monaco, "Cascadia Code", Consolas, monospace; color: #d4d4d4; white-space: pre; word-wrap: normal; }
+  .article-quote { border-left: 4px solid #ccc; padding: 4px 0 4px 18px; margin: 20px 0; color: #545658; }
+  .article-quote p { font-size: 16px; line-height: 1.65; margin-bottom: 10px; color: inherit; }
+  .article-quote p:last-child { margin-bottom: 0; }
   .references { margin: 32px 0 16px; padding: 18px 20px; background: #f7f7f7; border-radius: 6px; }
   .references-title { font-size: 18px; font-weight: 700; margin: 0 0 12px; color: #141414; }
   .reference-item { font-size: 13px; line-height: 1.6; color: #545658; margin: 0 0 8px; word-break: break-word; }
@@ -1152,7 +1543,14 @@ export async function fetchAndExtractContent(
 
   const html = await resp.text();
   const article = await extractArticle(html, sourceId);
-  const content = article.paragraphs.join('\n\n');
+  // 合并所有可读文本（段落、引文、代码块），代码块用 [代码] 标记包裹
+  const parts: string[] = [];
+  for (const block of article.blocks) {
+    if (block.type === 'text') parts.push(...block.texts);
+    else if (block.type === 'quote') parts.push(...block.texts);
+    else if (block.type === 'code') parts.push(`[代码]\n${block.code}\n[/代码]`);
+  }
+  const content = parts.length > 0 ? parts.join('\n\n') : article.paragraphs.join('\n\n');
 
   logger.info(`Extracted for RSS: title="${article.title.slice(0, 60)}", body=${content.length} chars`);
   return { title: article.title, content };
