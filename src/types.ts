@@ -86,7 +86,7 @@ export interface RssConfig {
 /** Worker 环境变量 */
 export interface WorkerEnv {
   RSS_CONFIG: KVNamespace;
-  RSS_ARTICLE_CACHE: KVNamespace;
+  RSS_CACHE: KVNamespace;
   ACCESS_TOKEN: string;
   LOG_LEVEL?: string;
   [key: string]: unknown;

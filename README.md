@@ -42,7 +42,6 @@ pnpm run config:push
 # 首次
 npx wrangler kv namespace create RSS_CONFIG
 npx wrangler kv namespace create RSS_CACHE
-npx wrangler kv namespace create RSS_ARTICLE_CACHE
 # 填写 wrangler.toml 中的 KV namespace id
 npx wrangler secret put ACCESS_TOKEN
 npx wrangler secret put LLM_API_KEY

@@ -53,7 +53,7 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     // 优先从缓存取翻译好的 HTML
     if (!refreshCache) {
-      const cached = await getArticleCache(c.env, decodedUrl, targetLang);
+      const cached = await getArticleCache(c.env, source.id, decodedUrl, targetLang);
       if (cached) {
         logger.info(`Serving cached article: ${decodedUrl}`);
         return new Response(cached, {
@@ -79,10 +79,10 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
       // 先删旧缓存（防止配额耗尽后旧缓存残留），再异步写新缓存
       if (refreshCache) {
-        await deleteArticleCache(c.env, decodedUrl, targetLang);
+        await deleteArticleCache(c.env, source.id, decodedUrl, targetLang);
       }
       c.executionCtx.waitUntil(
-        setArticleCache(c.env, decodedUrl, targetLang, translatedHtml),
+        setArticleCache(c.env, source.id, decodedUrl, targetLang, translatedHtml),
       );
 
       return new Response(translatedHtml, {

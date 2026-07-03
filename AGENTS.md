@@ -18,7 +18,7 @@ Cloudflare Worker 上的 RSS 翻译代理，支持 LLM 引擎翻译，提供 RSS
 - **XML 解析**: fast-xml-parser v4（属性前缀 `@_`，CDATA 通过 `__cdata` 属性标记）
 - **HTML 解析**: cheerio v1（CSS 选择器 + JSON-LD 结构化数据）
 - **翻译**: DeepSeek API（OpenAI 兼容格式）
-- **存储**: Cloudflare KV ×3（`RSS_CONFIG` + `RSS_CACHE` + `RSS_ARTICLE_CACHE`）
+- **存储**: Cloudflare KV ×2（`RSS_CONFIG` + `RSS_CACHE`）
 - **语言**: TypeScript strict mode
 
 ## 常用命令
@@ -57,7 +57,7 @@ src/
 | 绑定 | 用途 |
 |------|------|
 | `RSS_CONFIG` | 环境变量（wrangler.toml vars，JSON 对象），存储 RSS 源列表和配置 |
-| `RSS_ARTICLE_CACHE` | 文章完整 HTML 缓存，key 格式 `cache:article:v1:<url_hash>:ZH`，TTL 7 天 |
+| `RSS_CACHE` | 文章完整 HTML 缓存 + 文本翻译缓存，key 格式 `cache:article:v1:<url_hash>:ZH`，TTL 7 天 |
 
 ### 文章缓存 key 计算
 
@@ -129,7 +129,7 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 流程：
 1. 从 KV 读配置，找到 `translate_body: true` 的 source
 2. 拉取 RSS，解析文章列表
-3. 逐篇检查 `RSS_ARTICLE_CACHE` 是否已有缓存
+3. 逐篇检查 `RSS_CACHE` 是否已有缓存
 4. 未缓存 → 抓取原文 → cheerio 提取内容 → LLM 翻译 → 渲染 HTML → 写入 KV
 5. 每轮最多处理 `max_articles_per_run` 篇（默认 10），跨 source 共用限额
 
@@ -165,7 +165,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 - 使用 DeepSeek `deepseek-v4-flash`，OpenAI 兼容 API
 - 单文本翻译时不编号，直接返回
 - 批量翻译时用 `[1] [2] ...` 格式拼接成一次 API 调用
-- 每段文本独立进 KV 文本缓存（`RSS_CACHE`），跨文章复用
+- 每段文本独立进 KV 缓存（`RSS_CACHE`），跨文章复用
 - 翻译失败静默返回原文
 
 ## 配置
@@ -179,7 +179,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 
 1. 创建 KV namespace：
    ```bash
-   npx wrangler kv namespace create RSS_ARTICLE_CACHE
+   npx wrangler kv namespace create RSS_CACHE
    ```
 2. 填入 `wrangler.toml` 的 `[[kv_namespaces]]`
 3. 设置 secrets：`ACCESS_TOKEN`、每个 provider 的 `{NAME}_API_KEY`（或通过 `api_key_name` 指向共享 secret）

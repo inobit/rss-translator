@@ -17,5 +17,5 @@ binding = "RSS_CONFIG"
 id = "e47f4fc3903443f6bc8e359928ab5b5c"
 
 [[kv_namespaces]]
-binding = "RSS_ARTICLE_CACHE"
+binding = "RSS_CACHE"
 id = "df144d8668a14e7c92da5c1545957c6d"

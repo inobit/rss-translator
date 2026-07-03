@@ -45,7 +45,7 @@ export async function getRssMeta(
 ): Promise<Record<string, RssItemMeta> | null> {
   const key = rssMetaKey(sourceId, targetLang);
   try {
-    const raw = await env.RSS_ARTICLE_CACHE.get(key);
+    const raw = await env.RSS_CACHE.get(key);
     if (!raw) return null;
     logger.debug('RSS meta cache hit', { key });
     return JSON.parse(raw) as Record<string, RssItemMeta>;
@@ -63,7 +63,7 @@ export async function setRssMeta(
   meta: Record<string, RssItemMeta>,
 ): Promise<void> {
   const key = rssMetaKey(sourceId, targetLang);
-  await env.RSS_ARTICLE_CACHE.put(key, JSON.stringify(meta), {
+  await env.RSS_CACHE.put(key, JSON.stringify(meta), {
     expirationTtl: ARTICLE_CACHE_TTL,
   });
   logger.debug('RSS meta cache set', { key, entries: Object.keys(meta).length });
@@ -86,32 +86,34 @@ export async function setConfig(_env: WorkerEnv, config: RssConfig): Promise<voi
 /** 删除文章 HTML 缓存 */
 export async function deleteArticleCache(
   env: WorkerEnv,
+  sourceId: string,
   url: string,
   targetLang: string,
 ): Promise<void> {
-  const key = articleCacheKey(url, targetLang);
+  const key = articleCacheKey(sourceId, url, targetLang);
   try {
-    await env.RSS_ARTICLE_CACHE.delete(key);
+    await env.RSS_CACHE.delete(key);
     logger.debug('Article cache deleted', { key });
   } catch (e) {
     logger.warn('Failed to delete article cache', { key, error: e });
   }
 }
 
-function articleCacheKey(url: string, targetLang: string): string {
+function articleCacheKey(sourceId: string, url: string, targetLang: string): string {
   const hash = hashString(url);
-  return `${ARTICLE_CACHE_PREFIX}${ARTICLE_CACHE_VERSION}:${hash}:${targetLang}`;
+  return `${ARTICLE_CACHE_PREFIX}${ARTICLE_CACHE_VERSION}:${sourceId}:${hash}:${targetLang}`;
 }
 
 /** 获取缓存的翻译后文章 HTML（独立 KV namespace） */
 export async function getArticleCache(
   env: WorkerEnv,
+  sourceId: string,
   url: string,
   targetLang: string,
 ): Promise<string | null> {
-  const key = articleCacheKey(url, targetLang);
+  const key = articleCacheKey(sourceId, url, targetLang);
   try {
-    const raw = await env.RSS_ARTICLE_CACHE.get(key);
+    const raw = await env.RSS_CACHE.get(key);
     if (!raw) return null;
     logger.debug('Article cache hit', { key });
     return raw as string;
@@ -124,12 +126,13 @@ export async function getArticleCache(
 /** 缓存翻译后的文章 HTML（独立 KV namespace） */
 export async function setArticleCache(
   env: WorkerEnv,
+  sourceId: string,
   url: string,
   targetLang: string,
   html: string,
 ): Promise<void> {
-  const key = articleCacheKey(url, targetLang);
-  await env.RSS_ARTICLE_CACHE.put(key, html, {
+  const key = articleCacheKey(sourceId, url, targetLang);
+  await env.RSS_CACHE.put(key, html, {
     expirationTtl: ARTICLE_CACHE_TTL,
   });
   logger.debug('Article cache set', { key });

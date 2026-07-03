@@ -97,7 +97,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
         if (cachedCount >= maxArticles) break;
         if (!item.link) continue;
 
-        const cached = await getArticleCache(env, item.link, targetLang);
+        const cached = await getArticleCache(env, source.id, item.link, targetLang);
         if (cached) {
           logger.info(`Article cache hit: ${item.link}`);
           continue;
@@ -127,7 +127,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
             requestIntervalMs,
             fallbacks.length > 0 ? fallbacks : undefined,
           );
-          await setArticleCache(env, item.link, targetLang, html);
+          await setArticleCache(env, source.id, item.link, targetLang, html);
           cachedCount++;
           logger.info(
             `Article cache written ${cachedCount}/${maxArticles}: ${item.link}`,
