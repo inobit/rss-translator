@@ -208,17 +208,29 @@ async function translateViaLlm(
 
 function parseLlmResult(content: string, expectedCount: number): string[] {
   const results: string[] = [];
-  const regex = /\[(\d+)\]\s*([\s\S]*?)(?=\[\d+\]|$)/g;
-  let match;
+  // 按行解析，仅匹配行首的 [N] 标记，避免正文内联引用（如 [2]、[11]）干扰分割
+  const lines = content.split('\n');
+  let currentIdx = -1;
+  let currentText: string[] = [];
 
-  while ((match = regex.exec(content)) !== null) {
-    const idx = parseInt(match[1], 10) - 1;
-    const text = match[2].trim();
-    results[idx] = text;
+  for (const line of lines) {
+    const match = /^\s*\[(\d+)\]\s*(.*)$/.exec(line);
+    if (match) {
+      if (currentIdx >= 0) {
+        results[currentIdx] = currentText.join('\n').trim();
+      }
+      currentIdx = parseInt(match[1], 10) - 1;
+      currentText = [match[2]];
+    } else if (currentIdx >= 0) {
+      currentText.push(line);
+    }
+  }
+  if (currentIdx >= 0) {
+    results[currentIdx] = currentText.join('\n').trim();
   }
 
-  // 如果正则解析失败，降级为整体返回
-  if (results.length === 0) {
+  // 如果正则解析失败（LLM 未使用 [N] 格式），降级为整体返回
+  if (results.length === 0 || results.every(r => r === undefined)) {
     return [content.trim()];
   }
 
