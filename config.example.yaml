@@ -1,0 +1,40 @@
+# RSS Translator 配置文件示例
+# 复制为 config.yaml 并填入你的配置，然后通过 pnpm run push-config 推送到 KV
+#
+# 线上通过 RSS_CONFIG KV namespace 下发
+
+defaults:
+  engine: deepseek # 默认翻译引擎
+  max_articles_per_run: 20 # 每次 cron 最多缓存文章数
+  target_lang: ZH # 目标语言
+
+providers:
+  # DeepLX （需设置 DEEPLX_API_KEY secret）
+  # deeplx:
+  #   type: deeplx
+  #   endpoint: https://api.deeplx.org
+
+  # DeepSeek（LLM，需设置 DEEPSEEK_API_KEY secret）
+  deepseek:
+    endpoint: https://api.deepseek.com/v1/chat/completions
+    model: deepseek-v4-flash
+
+sources:
+  - id: example-source
+    name: 示例源
+    url: https://example.com/rss.xml
+    title: 自定义 RSS 标题（可选）
+    domains: # 允许代理的文章域名白名单（可选）
+      - example.com
+    translate: true # 是否翻译 RSS 标题
+    translate_body: true # 是否翻译正文 + 改写 link
+    engine: deepseek # 指定翻译引擎（可选，默认用 defaults.engine）
+  - id: bbc-world
+    name: BBC World
+    url: https://feeds.bbci.co.uk/news/world/rss.xml
+    title: BBC 国际新闻
+    domains:
+      - bbc.co.uk
+      - bbc.com
+    translate: true
+    translate_body: true
