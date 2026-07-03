@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { createLogger } from '../utils/logger';
-import type { WorkerEnv, ResolvedProvider } from '../types';
-import { translateTexts, type LlmProviderConfig } from './translate';
+import type { WorkerEnv } from '../types';
+import { translateTexts, type LlmProviderConfig, type ResolvedProvider } from './translate';
 
 export interface ArticleImage {
   src: string;
@@ -1297,7 +1297,7 @@ async function extractArticle(html: string, sourceId?: string): Promise<ArticleD
 /**
  * 翻译文章内容，保留结构化数据
  */
-async function translateArticle(
+export async function translateArticle(
   article: ArticleData,
   env: WorkerEnv,
   engine: string,
@@ -1388,7 +1388,7 @@ async function translateArticle(
 /**
  * 渲染 BBC 风格文章页面
  */
-function renderArticleHtml(article: ArticleData, originalUrl: string): string {
+export function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
   let bylineHtml = '';
@@ -1525,6 +1525,30 @@ export async function fetchAndTranslatePage(
   const translated = await translateArticle(article, env, engine ?? 'deeplx', llm, maxInputTokens, batchDelayMs, fallbackProviders);
 
   return renderArticleHtml(translated, url);
+}
+
+/**
+ * 获取原文并渲染为格式化页面（不翻译）
+ * 用于缓存未命中时快速返回原文
+ */
+export async function fetchAndRenderPage(
+  url: string,
+  env: WorkerEnv,
+  sourceId?: string,
+): Promise<{ html: string; article: ArticleData }> {
+  const logger = createLogger(env);
+
+  logger.info(`Fetching article (no translate): ${url}`);
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+  });
+  if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+
+  const html = await resp.text();
+  const article = await extractArticle(html, sourceId);
+  logger.info(`Extracted (no translate): title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
+
+  return { html: renderArticleHtml(article, url), article };
 }
 
 /**

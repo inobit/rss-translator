@@ -11,6 +11,10 @@ const ARTICLE_CACHE_TTL = 7 * 24 * 60 * 60; // 7 天
 const RSS_META_PREFIX = 'cache:rss:';
 const RSS_META_VERSION = 'v3';
 
+/** pending 标记值，复用缓存 key，pending 由 setArticleCache/setRssMeta 覆盖 */
+const PENDING_MARKER = '__pending__';
+const PENDING_TTL = 60; // 60 秒，防止死锁
+
 export interface RssItemMeta {
   title: string;
   description: string;
@@ -46,7 +50,7 @@ export async function getRssMeta(
   const key = rssMetaKey(sourceId, targetLang);
   try {
     const raw = await env.RSS_CACHE.get(key);
-    if (!raw) return null;
+    if (!raw || raw === PENDING_MARKER) return null;
     logger.debug('RSS meta cache hit', { key });
     return JSON.parse(raw) as Record<string, RssItemMeta>;
   } catch (e) {
@@ -114,7 +118,7 @@ export async function getArticleCache(
   const key = articleCacheKey(sourceId, url, targetLang);
   try {
     const raw = await env.RSS_CACHE.get(key);
-    if (!raw) return null;
+    if (!raw || raw === PENDING_MARKER) return null;
     logger.debug('Article cache hit', { key });
     return raw as string;
   } catch (e) {
@@ -136,4 +140,49 @@ export async function setArticleCache(
     expirationTtl: ARTICLE_CACHE_TTL,
   });
   logger.debug('Article cache set', { key });
+}
+
+// ============== 异步翻译防重复 pending 标记 ==============
+
+/**
+ * 在文章缓存 key 上尝试标记 pending。
+ * 返回 true：成功标记，可以开始翻译。false：已有缓存或已有 pending。
+ * setArticleCache 会直接覆盖 pending 标记。
+ */
+export async function tryMarkArticlePending(
+  env: WorkerEnv,
+  sourceId: string,
+  url: string,
+  targetLang: string,
+): Promise<boolean> {
+  const key = articleCacheKey(sourceId, url, targetLang);
+  try {
+    const raw = await env.RSS_CACHE.get(key);
+    if (raw) return false;
+    await env.RSS_CACHE.put(key, PENDING_MARKER, { expirationTtl: PENDING_TTL });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 在 RSS meta 缓存 key 上尝试标记 pending。
+ * 返回 true：成功标记，可以开始翻译。false：已有缓存或已有 pending。
+ * setRssMeta 会直接覆盖 pending 标记。
+ */
+export async function tryMarkRssPending(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+): Promise<boolean> {
+  const key = rssMetaKey(sourceId, targetLang);
+  try {
+    const raw = await env.RSS_CACHE.get(key);
+    if (raw) return false;
+    await env.RSS_CACHE.put(key, PENDING_MARKER, { expirationTtl: PENDING_TTL });
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -2,7 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv, RssSource } from '../types';
 import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
 import { translateTexts, resolveProviders, getSourceEngines } from '../services/translate';
-import { getConfig, getRssMeta, setRssMeta, urlHash, RssItemMeta } from '../storage/kv';
+import { getConfig, getRssMeta, setRssMeta, urlHash, RssItemMeta, tryMarkRssPending } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
 export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -80,7 +80,7 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       channelMeta.title = source.title;
     }
 
-    // 翻译：从 per-source 聚合缓存取，命中跳过 LLM，未命中批量翻译后合并写回
+    // 翻译：从 per-source 聚合缓存取，命中跳过 LLM，未命中异步翻译后合并写回
     if (source.translate && channel.items.length > 0) {
       const metaCache = refreshCache ? null : await getRssMeta(c.env, cacheKey, targetLang);
       const cachedItems: Record<number, RssItemMeta> = {}; // index → cached meta
@@ -96,7 +96,7 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         }
       }
 
-      // 收集未命中（需 LLM 翻译）的条目
+      // 收集未命中（需翻译）的条目
       const uncached: { index: number; title: string; description: string }[] = [];
       for (let i = 0; i < channel.items.length; i++) {
         if (!cachedItems[i]) {
@@ -109,55 +109,79 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       }
 
       if (uncached.length > 0) {
-        // 合并标题和描述为交错列表，按 token 限制自动分批
-        const allTexts: string[] = [];
-        for (const u of uncached) {
-          allTexts.push(u.title);
-          allTexts.push(u.description);
-        }
-
-        let translated = false;
-        try {
-          const allResults = await translateTexts({
-            engine: effectiveEngine,
-            texts: allTexts,
-            targetLang, sourceLang: 'EN',
-            env: c.env, prompt: config?.llm_prompt,
-            llm: llmConfig, deeplx: deeplxConfig, cloudflare: cloudflareConfig,
-            fallbackProviders: fallbacks.length > 0 ? fallbacks : undefined,
-            maxInputTokens: config?.defaults?.max_input_tokens,
-          });
-
-          for (let j = 0; j < uncached.length; j++) {
-            const idx = uncached[j].index;
-            cachedItems[idx] = {
-              title: allResults[j * 2] ?? channel.items[idx].title,
-              description: allResults[j * 2 + 1] || channel.items[idx].description || '',
-            };
+        if (refreshCache) {
+          // refresh=1：同步翻译
+          const allTexts: string[] = [];
+          for (const u of uncached) {
+            allTexts.push(u.title);
+            allTexts.push(u.description);
           }
-          translated = true;
-        } catch (e) {
-          logger.error('RSS metadata translation failed, using originals', e as Error);
-        }
 
-        // 异步写回聚合缓存（仅翻译成功时写入，避免污染缓存）
-        if (translated && !refreshCache) {
-          const merged = { ...(metaCache || {}) };
-          for (let i = 0; i < channel.items.length; i++) {
-            const item = channel.items[i];
-            if (item.link) {
-              const hash = urlHash(item.link);
-              const meta = cachedItems[i];
-              if (meta) merged[hash] = meta;
+          try {
+            const allResults = await translateTexts({
+              engine: effectiveEngine,
+              texts: allTexts,
+              targetLang, sourceLang: 'EN',
+              env: c.env, prompt: config?.llm_prompt,
+              llm: llmConfig, deeplx: deeplxConfig, cloudflare: cloudflareConfig,
+              fallbackProviders: fallbacks.length > 0 ? fallbacks : undefined,
+              maxInputTokens: config?.defaults?.max_input_tokens,
+            });
+
+            for (let j = 0; j < uncached.length; j++) {
+              const idx = uncached[j].index;
+              cachedItems[idx] = {
+                title: allResults[j * 2] ?? channel.items[idx].title,
+                description: allResults[j * 2 + 1] || channel.items[idx].description || '',
+              };
             }
+          } catch (e) {
+            logger.error('RSS metadata translation failed, using originals', e as Error);
           }
-          c.executionCtx.waitUntil(
-            setRssMeta(c.env, cacheKey, targetLang, merged),
-          );
+        } else {
+          // 缓存未命中：异步翻译，当前请求直接返回原文
+          c.executionCtx.waitUntil((async () => {
+            const acquired = await tryMarkRssPending(c.env, cacheKey, targetLang);
+            if (!acquired) {
+              logger.info(`RSS translation already pending for: ${cacheKey}`);
+              return;
+            }
+            logger.info(`Async RSS translation started: ${cacheKey} (${uncached.length} items)`);
+            try {
+              const allTexts: string[] = [];
+              for (const u of uncached) {
+                allTexts.push(u.title);
+                allTexts.push(u.description);
+              }
+              const allResults = await translateTexts({
+                engine: effectiveEngine,
+                texts: allTexts,
+                targetLang, sourceLang: 'EN',
+                env: c.env, prompt: config?.llm_prompt,
+                llm: llmConfig, deeplx: deeplxConfig, cloudflare: cloudflareConfig,
+                fallbackProviders: fallbacks.length > 0 ? fallbacks : undefined,
+                maxInputTokens: config?.defaults?.max_input_tokens,
+              });
+              const merged = { ...(metaCache || {}) };
+              for (let j = 0; j < uncached.length; j++) {
+                const item = channel.items[uncached[j].index];
+                if (item.link) {
+                  merged[urlHash(item.link)] = {
+                    title: allResults[j * 2] ?? uncached[j].title,
+                    description: allResults[j * 2 + 1] || uncached[j].description || '',
+                  };
+                }
+              }
+              await setRssMeta(c.env, cacheKey, targetLang, merged);
+              logger.info(`Async RSS translation done: ${cacheKey}`);
+            } catch (err) {
+              logger.error(`Async RSS translation failed: ${cacheKey}`, err as Error);
+            }
+          })());
         }
       }
 
-      // 应用翻译到 channel.items（KV 缓存命中的 + LLM 翻译成功的）
+      // 应用翻译到 channel.items（仅 KV 缓存命中的，未命中保留原文）
       for (let i = 0; i < channel.items.length; i++) {
         const translated = cachedItems[i];
         if (translated) {
