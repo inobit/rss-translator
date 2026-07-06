@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/rss-translator
 EnvironmentFile=/opt/rss-translator/.env
-ExecStart=/usr/bin/node --experimental-strip-types /opt/rss-translator/cron-vps.ts articles
+ExecStart=/usr/bin/node /opt/rss-translator/cron-vps.mjs articles
 
 # 安全加固
 PrivateTmp=yes

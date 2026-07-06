@@ -13,7 +13,9 @@
     "cf:typegen": "wrangler types",
     "push-config": "node scripts/push-config.mjs",
     "push-config:local": "node scripts/push-config.mjs --local",
-    "cron-vps": "node --experimental-strip-types cron-vps.ts"
+    "cron-vps": "node --experimental-strip-types cron-vps.ts",
+    "build:cron": "vite build --config vite.config.cron.ts",
+    "build": "vite build --config vite.config.cron.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240401.0",
@@ -26,6 +28,7 @@
     "globals": "^17.4.0",
     "js-yaml": "^5.2.1",
     "typescript": "^5.3.3",
+    "vite": "^8.1.3",
     "wrangler": "^4.0.0"
   },
   "dependencies": {
