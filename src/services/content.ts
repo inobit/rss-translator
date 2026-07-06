@@ -215,17 +215,10 @@ function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
         blocks.push({ type: 'heading', text });
       }
     } else if (blockType.includes('image') || blockType === 'video') {
-      const $img = $el.find('img').first();
-      if ($img.length) {
-        const src = $img.attr('src');
-        const alt = $img.attr('alt') || '';
-        if (src) {
-          const copyright = $el.find('[class*="Copyright"], [class*="copyright"]')
-            .first().text().trim() || undefined;
-          const img: ArticleImage = { src, alt, copyright };
-          images.push(img);
-          blocks.push({ type: 'image', image: img });
-        }
+      const img = extractImageFromContainer($el);
+      if (img) {
+        images.push(img);
+        blocks.push({ type: 'image', image: img });
       }
     }
   });
@@ -442,6 +435,53 @@ function splitCaptionCredit(text: string): { caption: string; credit?: string } 
   return { caption: text };
 }
 
+/**
+ * 从容器元素中提取图片信息
+ * 自动从 <figcaption>（优先）或 <img alt> 中读取说明文字，
+ * 并用 splitCaptionCredit 分离摄影署名
+ * @param $container cheerio 容器元素（<figure> / <div> / <picture> 等）
+ * @returns 提取的图片信息，无有效图片时返回 null
+ */
+function extractImageFromContainer(
+  $container: cheerio.Cheerio<any>,
+): { src: string; alt: string; copyright?: string } | null {
+  // 如果容器本身就是 img，直接使用；否则在子元素中查找
+  const $img = $container.is('img') ? $container : $container.find('img').first();
+  if (!$img.length) return null;
+
+  const src = $img.attr('src') || '';
+  if (!src) return null;
+
+  let alt = '';
+  let copyright: string | undefined;
+
+  // 优先从 figcaption 提取说明和署名
+  const $figcaption = $container.find('figcaption').first();
+  if ($figcaption.length) {
+    const capText = $figcaption.text().trim();
+    if (capText) {
+      const split = splitCaptionCredit(capText);
+      alt = split.caption;
+      copyright = split.credit;
+    }
+  }
+
+  // figcaption 无内容时，降级使用 img alt
+  if (!alt) {
+    alt = $img.attr('alt') || '';
+  }
+
+  // 补充性尝试：从 Copyright 类名元素提取署名（BBC 等站点没有 figcaption 但有版权类名元素）
+  if (!copyright) {
+    const copyrightEl = $container.find('[class*="Copyright"], [class*="copyright"]').first();
+    if (copyrightEl.length) {
+      copyright = copyrightEl.text().trim() || undefined;
+    }
+  }
+
+  return { src, alt, copyright };
+}
+
 // ================ Guardian 提取器 ================
 
 function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): ArticleData {
@@ -481,28 +521,13 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
   // 提取主图（Guardian 使用 picture 元素包裹 lead image）
   const $mainPicture = $('picture').first();
   if ($mainPicture.length) {
-    const $img = $mainPicture.find('img').first();
-    const src = $img.attr('src');
-    let alt = $img.attr('alt') || '';
-    let copyright: string | undefined;
-    if (src) {
-      // Guardian DCR 格式下，主图完整说明通常在 <figure> 的 <figcaption> 中，
-      // <img alt> 可能缺失或不完整，优先取 figcaption 文本
-      const $parentFigure = $mainPicture.closest('figure');
-      if ($parentFigure.length) {
-        const $figcaption = $parentFigure.find('figcaption').first();
-        if ($figcaption.length) {
-          const captionText = $figcaption.text().trim();
-          if (captionText) {
-            const split = splitCaptionCredit(captionText);
-            alt = split.caption;
-            copyright = split.credit;
-          }
-        }
-      }
-      addedImageSrcs.add(src);
-      images.push({ src, alt, copyright });
-      blocks.push({ type: 'image', image: { src, alt, copyright } });
+    const $parentFigure = $mainPicture.closest('figure');
+    const $container = $parentFigure.length ? $parentFigure : $mainPicture;
+    const img = extractImageFromContainer($container);
+    if (img) {
+      addedImageSrcs.add(img.src);
+      images.push(img);
+      blocks.push({ type: 'image', image: img });
     }
   }
 
@@ -530,32 +555,11 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
 
       // 图片
       if (tag === 'figure') {
-        const $img = $el.find('img').first();
-        const $figcaption = $el.find('figcaption').first();
-
-        let imgAlt = '';
-        let imgSrc = '';
-
-        if ($img.length) {
-          imgSrc = $img.attr('src') || '';
-          imgAlt = $img.attr('alt') || '';
-        }
-
-        // figcaption 作为图片说明文字，覆盖 img 的 alt
-        let imgCopyright: string | undefined;
-        if ($figcaption.length) {
-          const capText = $figcaption.text().trim();
-          if (capText) {
-            const split = splitCaptionCredit(capText);
-            imgAlt = split.caption;
-            imgCopyright = split.credit;
-          }
-        }
-
-        if (imgSrc && !addedImageSrcs.has(imgSrc)) {
-          addedImageSrcs.add(imgSrc);
-          images.push({ src: imgSrc, alt: imgAlt, copyright: imgCopyright });
-          blocks.push({ type: 'image', image: { src: imgSrc, alt: imgAlt, copyright: imgCopyright } });
+        const img = extractImageFromContainer($el);
+        if (img && !addedImageSrcs.has(img.src)) {
+          addedImageSrcs.add(img.src);
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
         }
         return;
       }
@@ -860,13 +864,12 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
   const blocks: ContentBlock[] = [];
 
   // 提取 featured image
-  const $featuredImg = $('.wp-block-post-featured-image img').first();
-  if ($featuredImg.length) {
-    const src = $featuredImg.attr('src');
-    const alt = $featuredImg.attr('alt') || '';
-    if (src) {
-      images.push({ src, alt });
-      blocks.push({ type: 'image', image: { src, alt } });
+  const $featuredContainer = $('.wp-block-post-featured-image').first();
+  if ($featuredContainer.length) {
+    const img = extractImageFromContainer($featuredContainer);
+    if (img) {
+      images.push(img);
+      blocks.push({ type: 'image', image: img });
     }
   }
 
@@ -944,15 +947,10 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
 
       // 图片（Gutenberg image block）
       if ($el.is('figure') || $el.hasClass('wp-block-image')) {
-        const $img = $el.find('img').first();
-        if ($img.length) {
-          const src = $img.attr('src');
-          const alt = $img.attr('alt') || '';
-          if (src && !images.some(i => i.src === src)) {
-            const img: ArticleImage = { src, alt };
-            images.push(img);
-            blocks.push({ type: 'image', image: img });
-          }
+        const img = extractImageFromContainer($el);
+        if (img && !images.some(i => i.src === img.src)) {
+          images.push(img);
+          blocks.push({ type: 'image', image: img });
         }
         return;
       }
@@ -1139,13 +1137,11 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
     // 段落（含内嵌 <video>/<img> 的段落）
     if (tag === 'p') {
       // 段落内嵌图片
-      const $img = $el.find('img').first();
-      if ($img.length) {
-        const src = $img.attr('src');
-        const alt = $img.attr('alt') || '';
-        if (src && !addedImageSrcs.has(src)) {
-          addedImageSrcs.add(src);
-          const img: ArticleImage = { src, alt };
+      const $imgInP = $el.find('img').first();
+      if ($imgInP.length) {
+        const img = extractImageFromContainer($el);
+        if (img && !addedImageSrcs.has(img.src)) {
+          addedImageSrcs.add(img.src);
           images.push(img);
           blocks.push({ type: 'image', image: img });
         }
@@ -1230,27 +1226,22 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
         return;
       }
       // 图片
-      const $img = $el.find('img').first();
-      if ($img.length) {
-        const src = $img.attr('src');
-        const alt = $img.attr('alt') || '';
-        if (src && !addedImageSrcs.has(src)) {
-          addedImageSrcs.add(src);
-          images.push({ src, alt });
-          blocks.push({ type: 'image', image: { src, alt } });
-        }
-        return;
+      const img = extractImageFromContainer($el);
+      if (img && !addedImageSrcs.has(img.src)) {
+        addedImageSrcs.add(img.src);
+        images.push(img);
+        blocks.push({ type: 'image', image: img });
       }
+      if (img) return;
     }
 
     // 独立 <img>（不在 p/div/figure 内）
     if (tag === 'img') {
-      const src = $el.attr('src');
-      const alt = $el.attr('alt') || '';
-      if (src && !addedImageSrcs.has(src)) {
-        addedImageSrcs.add(src);
-        images.push({ src, alt });
-        blocks.push({ type: 'image', image: { src, alt } });
+      const img = extractImageFromContainer($el);
+      if (img && !addedImageSrcs.has(img.src)) {
+        addedImageSrcs.add(img.src);
+        images.push(img);
+        blocks.push({ type: 'image', image: img });
       }
       return;
     }
