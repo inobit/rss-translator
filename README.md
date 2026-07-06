@@ -1,6 +1,6 @@
 # RSS Translator
 
-Cloudflare Worker 上的 RSS 翻译代理，支持多 LLM provider 翻译，定时预缓存 RSS 元信息和正文。
+Cloudflare Worker 上的 RSS 翻译代理，支持多 LLM provider 翻译。免费计划兼容：VPS 定时预缓存翻译，Worker 纯读缓存。
 
 ## 使用
 
@@ -13,14 +13,19 @@ GET /raw?url=...&source=...&token=<TOKEN>    → 翻译后的文章 HTML
 
 ## 定时缓存
 
-通过 Cloudflare Cron Triggers 定时预翻译，减少在线请求延迟：
+> **注意**：定时任务已从 Cloudflare Cron Triggers 迁移至 VPS（systemd timer），
+> 免费计划 CPU 10ms 限制下 cron 无法完成翻译。升级到 Workers Paid 后可恢复使用 CF cron。
 
-| Cron                  | 频率         | 任务                       |
-|-----------------------|-------------|----------------------------|
-| `0 */1 * * *`         | 每小时整点    | 预缓存文章正文（translate_body 为 true 的 source） |
-| `0 9,3 * * *`         | 每天 3 次    | 预缓存 RSS 标题和摘要（translate 为 true 的 source） |
+通过 VPS systemd timer 定时预翻译，写入 CF KV：
 
-每轮最多处理 `max_articles_per_run` 篇文章（默认 20），跨 source 共用限额。
+| Timer                     | 频率      | 任务                       |
+|---------------------------|-----------|----------------------------|
+| `rss-cron-articles.timer` | 每 10 分钟 | 预缓存文章正文（translate_body 为 true 的 source） |
+| `rss-cron-meta.timer`     | 每小时    | 预缓存 RSS 标题和摘要（translate 为 true 的 source） |
+
+每轮最多处理 `max_articles_per_run` 篇文章（默认 10），跨 source 共用限额。
+
+Worker 端只读 KV 缓存，缓存命中直接返回翻译版，未命中返回原文（下次 cron 补齐）。CPU < 5ms。
 
 ## 支持的 Source
 
@@ -108,3 +113,31 @@ pnpm run deploy
 # 后续
 pnpm run deploy
 ```
+
+### VPS 定时任务
+
+```bash
+git clone <repo> /opt/rss-translator
+cd /opt/rss-translator
+pnpm install --prod
+
+# 创建 .env（参考 .env.example），填写 CF_API_TOKEN + provider key
+cp .env.example .env
+vim .env
+
+# 安装 systemd timer（软链接，repo 更新 daemon-reload 后自动生效）
+sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.service /etc/systemd/system/
+sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.timer /etc/systemd/system/
+sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.service /etc/systemd/system/
+sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rss-cron-articles.timer rss-cron-meta.timer
+
+# 查看日志
+sudo journalctl -u rss-cron-articles.service -f
+```
+
+## 恢复 CF Cron（付费计划）
+
+升级到 Workers Paid 后，在 `wrangler.toml` 中取消注释 `[triggers]` 段，
+在 `src/worker.ts` 中取消注释 `scheduled` handler，即可恢复使用 CF Cron Triggers。

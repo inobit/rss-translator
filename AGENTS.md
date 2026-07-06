@@ -2,23 +2,31 @@
 
 ## 项目概述
 
-Cloudflare Worker 上的 RSS 翻译代理，支持 LLM 引擎翻译，提供 RSS 元信息翻译 + 正文代理翻译。
+Cloudflare Worker（免费计划 + VPS cron）上的 RSS 翻译代理，支持 LLM 引擎翻译。
 
 ```
 用户 RSS 阅读器
   │
-  ├─ GET /rss?source=bbc-world&token=xxx → 翻译后的 RSS XML
-  └─ GET /raw?url=...&source=...&token=xxx → 翻译后的 HTML 文章
+  ├─ GET /rss?source=bbc-world&token=xxx → 翻译后的 RSS XML（KV 缓存）
+  └─ GET /raw?url=...&source=...&token=xxx → 翻译后的 HTML 文章（KV 缓存）
+
+VPS（systemd timer）                            CF Worker（免费计划）
+  │                                                │
+  ├─ 每 10min: 抓 RSS → cheerio 解析               ├─ /rss → 纯读 KV → XML
+  │  → LLM 翻译 → REST API 写 KV                   ├─ /raw → 纯读 KV → HTML
+  ├─ 每 1h:   抓 RSS → 翻译标题/摘要 → 写 KV       └─ 无定时任务、无 waitUntil
+  │                                                  （CPU < 5ms，免费计划安全）
+  └─────────────────────────────────────────────────┘
 ```
 
 ## 技术栈
 
-- **运行时**: Cloudflare Workers（含 Cron Triggers 定时任务）
-- **框架**: Hono v3（导出 `{ fetch, scheduled }` 格式支持 scheduled handler）
+- **HTTP 代理**: Cloudflare Workers（Hono v3，免费计划 10ms CPU）
+- **定时翻译**: VPS（systemd timer，Node 24 `--experimental-strip-types`）
 - **XML 解析**: fast-xml-parser v4（属性前缀 `@_`，CDATA 通过 `__cdata` 属性标记）
 - **HTML 解析**: cheerio v1（CSS 选择器 + JSON-LD 结构化数据）
 - **翻译**: DeepSeek API（OpenAI 兼容格式）
-- **存储**: Cloudflare KV ×2（`RSS_CONFIG` + `RSS_CACHE`）
+- **存储**: Cloudflare KV ×2（`RSS_CONFIG` + `RSS_CACHE`），Worker 只读，VPS 通过 REST API 写
 - **语言**: TypeScript strict mode
 
 ## 常用命令
@@ -28,28 +36,38 @@ pnpm run dev          # wrangler dev 本地开发
 pnpm run deploy       # wrangler deploy 部署
 pnpm run type-check   # tsc --noEmit 类型检查
 npx wrangler tail     # 查看生产日志
+pnpm run cron-vps     # VPS 定时任务（手动触发，传入 articles 或 metadata）
 ```
 
 ## 架构
 
 ```
 src/
-├── worker.ts          # Hono 入口，注册路由/中间件，导出 { fetch, scheduled }
-├── cron.ts            # Cron 定时任务：预缓存翻译后的文章 HTML
-├── types.ts           # 全局类型定义（RssSource, RssConfig, WorkerEnv 等）
+├── worker.ts          # Hono 入口，注册路由/中间件，导出 { fetch }
+├── cron.ts            # Cron 逻辑（VPS 端复用，Worker 端暂未注册）
+├── types.ts           # 全局类型定义
 ├── routes/
-│   ├── rss.ts         # GET /rss — 生成翻译后的 RSS
-│   └── raw.ts         # GET /raw — 代理并翻译单篇文章（优先 KV 缓存）
+│   ├── rss.ts         # GET /rss — 纯读 KV 缓存，生成翻译 RSS
+│   ├── raw.ts         # GET /raw — 纯读 KV 缓存，未命中代理原文
+│   └── refresh.ts     # GET /refresh — 保留但未注册（VPS 替代）
 ├── middleware/
 │   └── auth.ts        # Token 鉴权（?token=xxx）
 ├── services/
 │   ├── translate.ts   # 翻译引擎（LLM OpenAI 兼容格式）
-│   ├── rss.ts         # RSS XML 解析与生成（fast-xml-parser，CDATA 包裹）
-│   └── content.ts     # 文章提取（cheerio + SOURCE_RULES + JSON-LD 降级）
+│   ├── rss.ts         # RSS XML 解析与生成
+│   └── content.ts     # 文章提取（cheerio + JSON-LD）
 ├── storage/
-│   └── kv.ts          # KV 读写（文章 HTML 缓存 + 配置读取）
+│   ├── kv.ts          # Worker KV 读写
+│   └── kv-rest.ts     # VPS REST API KV 适配器
 └── utils/
     └── logger.ts      # 日志
+---
+cron-vps.ts            # VPS cron 入口（Node.js 直接跑 TS）
+systemd/
+├── rss-cron-articles.service   # 文章缓存 systemd service
+├── rss-cron-articles.timer     # 每 10 分钟触发
+├── rss-cron-meta.service       # 元信息缓存 systemd service
+└── rss-cron-meta.timer         # 每小时触发
 ```
 
 ## KV 结构
@@ -124,9 +142,19 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 
 ## Cron 定时任务
 
-`wrangler.toml` 配置：`triggers.crons = ["*/10 * * * *"]`
+**当前方案：VPS systemd timer（免费计划兼容）**
 
-流程：
+- `cron-vps.ts` + `systemd/rss-cron-articles.timer`：每 10 分钟缓存文章正文
+- `cron-vps.ts` + `systemd/rss-cron-meta.timer`：每小时缓存 RSS 标题/摘要
+- VPS 通过 CF REST API 直写 KV，Worker 纯读缓存
+
+**付费计划可选恢复 CF Cron Triggers：**
+
+1. 取消注释 `wrangler.toml` 中 `[triggers]` 段
+2. 取消注释 `src/worker.ts` 中 `scheduled` handler 和 `registerRefreshRoute`
+3. `src/cron.ts` 逻辑无需修改，直接复用
+
+### 流程
 1. 从 KV 读配置，找到 `translate_body: true` 的 source
 2. 拉取 RSS，解析文章列表
 3. 逐篇检查 `RSS_CACHE` 是否已有缓存
@@ -184,3 +212,17 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 2. 填入 `wrangler.toml` 的 `[[kv_namespaces]]`
 3. 设置 secrets：`ACCESS_TOKEN`、每个 provider 的 `{NAME}_API_KEY`（或通过 `api_key_name` 指向共享 secret）
 4. 部署：`pnpm run deploy`
+
+### VPS 定时任务部署
+
+> 无需编译：Node 24 `--experimental-strip-types` 直接运行 TypeScript。
+
+1. Clone 仓库 + 安装依赖：
+   ```bash
+   git clone <repo> /opt/rss-translator
+   cd /opt/rss-translator
+   pnpm install --prod  # 512MB VPS 建议 --prod 避免安装 devDependencies
+   ```
+2. 创建 `.env`（参考 `.env.example`，需 CF_KV_API_TOKEN + provider key）
+3. 安装 systemd（软链接，repo 更新 `daemon-reload` 后自动生效）：
+4. 查看日志：`sudo journalctl -u rss-cron-articles.service -f`
