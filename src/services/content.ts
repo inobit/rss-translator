@@ -425,6 +425,23 @@ function sciamExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): Ar
 }
 
 
+/**
+ * 将 Guardian style 的 figcaption 文本拆分为说明文字和摄影署名
+ * 例如 "Caption text. Photograph: Emmanuel Wong/The Guardian"
+ * → { caption: "Caption text.", credit: "Photograph: Emmanuel Wong/The Guardian" }
+ * 如果无法识别署名则整个文本作为 caption 返回
+ */
+function splitCaptionCredit(text: string): { caption: string; credit?: string } {
+  const creditMatch = /[\s,.]+(Photograph|Photo|Picture|Composite|Illustration)\s*:\s*(.+)$/i.exec(text);
+  if (creditMatch) {
+    return {
+      caption: text.slice(0, creditMatch.index).trim(),
+      credit: `${creditMatch[1]}: ${creditMatch[2]}`,
+    };
+  }
+  return { caption: text };
+}
+
 // ================ Guardian 提取器 ================
 
 function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): ArticleData {
@@ -467,6 +484,7 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
     const $img = $mainPicture.find('img').first();
     const src = $img.attr('src');
     let alt = $img.attr('alt') || '';
+    let copyright: string | undefined;
     if (src) {
       // Guardian DCR 格式下，主图完整说明通常在 <figure> 的 <figcaption> 中，
       // <img alt> 可能缺失或不完整，优先取 figcaption 文本
@@ -475,12 +493,16 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
         const $figcaption = $parentFigure.find('figcaption').first();
         if ($figcaption.length) {
           const captionText = $figcaption.text().trim();
-          if (captionText) alt = captionText;
+          if (captionText) {
+            const split = splitCaptionCredit(captionText);
+            alt = split.caption;
+            copyright = split.credit;
+          }
         }
       }
       addedImageSrcs.add(src);
-      images.push({ src, alt });
-      blocks.push({ type: 'image', image: { src, alt } });
+      images.push({ src, alt, copyright });
+      blocks.push({ type: 'image', image: { src, alt, copyright } });
     }
   }
 
@@ -520,15 +542,20 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
         }
 
         // figcaption 作为图片说明文字，覆盖 img 的 alt
+        let imgCopyright: string | undefined;
         if ($figcaption.length) {
           const capText = $figcaption.text().trim();
-          if (capText) imgAlt = capText;
+          if (capText) {
+            const split = splitCaptionCredit(capText);
+            imgAlt = split.caption;
+            imgCopyright = split.credit;
+          }
         }
 
         if (imgSrc && !addedImageSrcs.has(imgSrc)) {
           addedImageSrcs.add(imgSrc);
-          images.push({ src: imgSrc, alt: imgAlt });
-          blocks.push({ type: 'image', image: { src: imgSrc, alt: imgAlt } });
+          images.push({ src: imgSrc, alt: imgAlt, copyright: imgCopyright });
+          blocks.push({ type: 'image', image: { src: imgSrc, alt: imgAlt, copyright: imgCopyright } });
         }
         return;
       }
