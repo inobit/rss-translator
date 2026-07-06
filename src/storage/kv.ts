@@ -77,7 +77,9 @@ export async function getConfig(env: WorkerEnv): Promise<RssConfig | null> {
   try {
     const raw = await env.RSS_CONFIG.get(CONFIG_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as RssConfig;
+    const config = JSON.parse(raw) as RssConfig;
+    config.sources = config.sources.filter((s) => s.enabled !== false);
+    return config;
   } catch {
     return null;
   }

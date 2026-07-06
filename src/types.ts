@@ -52,6 +52,8 @@ export interface RssSource {
   title?: string;
   /** 允许代理的文章域名白名单，为空则不限制（纯 token 验证） */
   domains?: string[];
+  /** 是否启用此源，设为 false 后等同于不存在，不会进入翻译逻辑 */
+  enabled?: boolean;
   translate: boolean;
   translate_body: boolean;
   /** @deprecated 使用 engines 替代，支持多 provider 按顺序失败自动流转 */
