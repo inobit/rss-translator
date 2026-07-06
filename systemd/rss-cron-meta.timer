@@ -1,9 +1,9 @@
 [Unit]
-Description=RSS Translator 元信息缓存 — 每小时
+Description=RSS Translator 元信息缓存 — 每 10 分钟
 Requires=rss-cron-meta.service
 
 [Timer]
-OnCalendar=hourly
+OnCalendar=*:0/10
 Persistent=true
 RandomizedDelaySec=60
 

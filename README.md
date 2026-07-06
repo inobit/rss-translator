@@ -21,7 +21,7 @@ GET /raw?url=...&source=...&token=<TOKEN>    → 翻译后的文章 HTML
 | Timer                     | 频率      | 任务                       |
 |---------------------------|-----------|----------------------------|
 | `rss-cron-articles.timer` | 每 10 分钟 | 预缓存文章正文（translate_body 为 true 的 source） |
-| `rss-cron-meta.timer`     | 每小时    | 预缓存 RSS 标题和摘要（translate 为 true 的 source） |
+| `rss-cron-meta.timer`     | 每 10 分钟 | 预缓存 RSS 标题和摘要（translate 为 true 的 source） |
 
 每轮最多处理 `max_articles_per_run` 篇文章（默认 10），跨 source 共用限额。
 

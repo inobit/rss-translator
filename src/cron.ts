@@ -31,12 +31,8 @@ export async function handleScheduled(
   switch (event.cron) {
     case "*/10 * * * *":
       // CASE: 对应 wrangler.toml 第一个 cron，修改时两边同步
-      // 每 10 分钟：预缓存文章正文
+      // 每 10 分钟：预缓存文章正文 + RSS 元信息
       await preCacheArticles(env);
-      break;
-    case "0 */1 * * *":
-      // CASE: 对应 wrangler.toml 第二个 cron，修改时两边同步
-      // 每小时整点：预缓存 RSS 元信息
       await preCacheRssMetadata(env);
       break;
   }

@@ -67,7 +67,7 @@ systemd/
 ├── rss-cron-articles.service   # 文章缓存 systemd service
 ├── rss-cron-articles.timer     # 每 10 分钟触发
 ├── rss-cron-meta.service       # 元信息缓存 systemd service
-└── rss-cron-meta.timer         # 每小时触发
+└── rss-cron-meta.timer         # 每 10 分钟触发
 ```
 
 ## KV 结构
@@ -145,7 +145,7 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 **当前方案：VPS systemd timer（免费计划兼容）**
 
 - `cron-vps.ts` + `systemd/rss-cron-articles.timer`：每 10 分钟缓存文章正文
-- `cron-vps.ts` + `systemd/rss-cron-meta.timer`：每小时缓存 RSS 标题/摘要
+- `cron-vps.ts` + `systemd/rss-cron-meta.timer`：每 10 分钟缓存 RSS 标题/摘要
 - VPS 通过 CF REST API 直写 KV，Worker 纯读缓存
 
 **付费计划可选恢复 CF Cron Triggers：**
