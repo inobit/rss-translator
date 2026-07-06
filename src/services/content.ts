@@ -226,6 +226,68 @@ function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
   return { title: '', images, paragraphs, blocks };
 }
 
+/** 按 DOM 顺序提取页面内容元素，不依赖 [data-block] 等特定标记 */
+function extractInDomOrder($: ReturnType<typeof cheerio.load>): ArticleData {
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  const $container = $('article').first().length
+    ? $('article').first()
+    : $('main, [role="main"]').first();
+  if (!$container.length) {
+    return { title: '', images, paragraphs, blocks };
+  }
+
+  const elements: Array<
+    { type: 'text'; text: string } | { type: 'image'; img: ArticleImage }
+  > = [];
+
+  $container.find('p, img, picture, figure, video').each((_i, el) => {
+    const tagName = el.type === 'tag' ? (el as any).name?.toLowerCase() : '';
+
+    if (tagName === 'img' || tagName === 'picture' || tagName === 'figure' || tagName === 'video') {
+      const img = extractImageFromContainer($(el));
+      if (img && !images.some(existing => existing.src === img.src)) {
+        elements.push({ type: 'image', img });
+      }
+      return;
+    }
+
+    if (tagName === 'p') {
+      const text = $(el).text().trim();
+      if (!text || text.length <= 10) return;
+      if (text === 'This video can not be played') return;
+      if (text.startsWith('To play this video')) return;
+      elements.push({ type: 'text', text });
+    }
+  });
+
+  // 合并连续文本为 text block，图片独立保留，整体保持 DOM 顺序
+  let i = 0;
+  while (i < elements.length) {
+    const el = elements[i];
+    if (el.type === 'image') {
+      images.push(el.img);
+      blocks.push({ type: 'image', image: el.img });
+      i++;
+    } else {
+      const textGroup: string[] = [el.text];
+      paragraphs.push(el.text);
+      i++;
+      while (i < elements.length && elements[i].type === 'text') {
+        const nextText = elements[i] as { type: 'text'; text: string };
+        textGroup.push(nextText.text);
+        paragraphs.push(nextText.text);
+        i++;
+      }
+      blocks.push({ type: 'text', texts: textGroup });
+    }
+  }
+
+  return { title: '', images, paragraphs, blocks };
+}
+
 /** JSON-LD / meta 降级（视频页或没有 data-block 的页面） */
 function fallbackFromMeta($: ReturnType<typeof cheerio.load>): ArticleData {
   const images: ArticleImage[] = [];
@@ -315,11 +377,27 @@ function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
 
   const data = extractDataBlocks($);
   if (data.blocks.length === 0) {
+    // 降级1：按 DOM 顺序提取（适用于无 [data-block] 的页面，如视频页）
+    // 降级2：meta/json-ld 兜底 + 补充日期和缩略图
+    const domData = extractInDomOrder($);
     const fallback = fallbackFromMeta($);
-    data.images.push(...fallback.images);
-    data.paragraphs.push(...fallback.paragraphs);
-    data.blocks.push(...fallback.blocks);
     date = date || fallback.date;
+
+    if (domData.blocks.length > 0) {
+      data.paragraphs.push(...domData.paragraphs);
+      data.images.push(...domData.images);
+      data.blocks.push(...domData.blocks);
+      // DOM 提取没找到图片时，从 JSON-LD/meta 补充缩略图（放在最前面）
+      if (domData.images.length === 0 && fallback.images.length > 0) {
+        const fbImages = fallback.blocks.filter(b => b.type === 'image');
+        data.images.push(...fallback.images);
+        data.blocks = [...fbImages, ...data.blocks];
+      }
+    } else {
+      data.images.push(...fallback.images);
+      data.paragraphs.push(...fallback.paragraphs);
+      data.blocks.push(...fallback.blocks);
+    }
   }
 
   return { title, author, role, date, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks };
