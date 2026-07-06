@@ -15,7 +15,8 @@
     "push-config:local": "node scripts/push-config.mjs --local",
     "cron-vps": "node --experimental-strip-types cron-vps.ts",
     "build:cron": "vite build --config vite.config.cron.ts",
-    "build": "vite build --config vite.config.cron.ts"
+    "build": "vite build --config vite.config.cron.ts",
+    "test:provider": "node --experimental-strip-types --env-file=.env scripts/test-provider.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240401.0",
