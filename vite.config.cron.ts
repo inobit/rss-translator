@@ -2,6 +2,9 @@ import { defineConfig } from "vite";
 import { builtinModules } from "node:module";
 
 export default defineConfig({
+  ssr: {
+    noExternal: true,
+  },
   build: {
     ssr: "cron-vps.ts",
     outDir: "dist",
@@ -13,7 +16,7 @@ export default defineConfig({
         ...builtinModules.map((m) => `node:${m}`),
       ],
       output: {
-        entryFileNames: "cron-vps.mjs",
+        entryFileNames: "cron-vps.js",
       },
     },
   },

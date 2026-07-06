@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=oneshot
 WorkingDirectory=/opt/rss-translator
 EnvironmentFile=/opt/rss-translator/.env
-ExecStart=/usr/bin/node /opt/rss-translator/cron-vps.mjs metadata
+ExecStart=/usr/bin/node /opt/rss-translator/cron-vps.js metadata
 
 PrivateTmp=yes
 NoNewPrivileges=yes
