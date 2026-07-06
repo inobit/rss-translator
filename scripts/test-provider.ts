@@ -16,6 +16,9 @@ import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 import { createInterface } from "readline";
 
+/** 翻译 API 请求超时时间（毫秒） */
+const TRANSLATE_TIMEOUT_MS = 180_000;
+
 // ====== 类型定义（复制自 types.ts，避免 import 需要 .ts 后缀） ======
 interface TranslateProvider {
   type?: "deeplx" | "cloudflare" | "llm";
@@ -141,6 +144,7 @@ async function translateViaDeeplx(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, target_lang: targetLang, ...(sourceLang ? { source_lang: sourceLang } : {}) }),
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -182,6 +186,7 @@ async function translateViaCloudflare(
         source_lang: sourceLang ? (CLOUDFLARE_LANG_MAP[sourceLang] ?? sourceLang.toLowerCase()) : "english",
         target_lang: CLOUDFLARE_LANG_MAP[targetLang] ?? targetLang.toLowerCase(),
       }),
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
     if (!resp.ok) {
       const body = await resp.text();
@@ -260,6 +265,7 @@ async function translateViaLlm(
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
     body: JSON.stringify(requestBody),
+    signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
   });
 
   if (!resp.ok) {
@@ -371,6 +377,7 @@ async function readInput(): Promise<string[]> {
     for await (const line of rl) {
       lines.push(line);
     }
+    rl.close();
     return lines.length > 0 ? [lines.join("\n")] : [];
   }
 
@@ -382,6 +389,7 @@ async function readInput(): Promise<string[]> {
     if (line === "") break;
     lines.push(line);
   }
+  rl.close();
   return lines.length > 0 ? [lines.join("\n")] : [];
 }
 

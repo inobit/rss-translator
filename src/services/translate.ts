@@ -1,6 +1,9 @@
 import type { TranslateEngine, WorkerEnv, DeeplxResponse, LlmResponse, CloudflareAIResponse, TranslateProvider, LlmProviderConfig, CloudflareProviderConfig, ResolvedProvider } from '../types';
 import { createLogger } from '../utils/logger';
 
+/** 翻译 API 请求超时时间（毫秒） */
+const TRANSLATE_TIMEOUT_MS = 180_000; // 3 分钟
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -257,6 +260,7 @@ async function translateViaDeeplx(
         target_lang: targetLang,
         ...(sourceLang ? { source_lang: sourceLang } : {}),
       }),
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -316,6 +320,7 @@ async function translateViaCloudflare(
         source_lang: sourceLang ? (CLOUDFLARE_LANG_MAP[sourceLang] ?? sourceLang.toLowerCase()) : 'english',
         target_lang: CLOUDFLARE_LANG_MAP[targetLang] ?? targetLang.toLowerCase(),
       }),
+      signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
     });
 
     if (!resp.ok) {
@@ -373,6 +378,7 @@ async function translateViaLlm(
       'Authorization': `Bearer ${provider.apiKey}`,
     },
     body: JSON.stringify(requestBody),
+    signal: AbortSignal.timeout(TRANSLATE_TIMEOUT_MS),
   });
 
   if (!resp.ok) {
