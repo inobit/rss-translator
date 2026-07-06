@@ -4,13 +4,14 @@
 RSS_VPS ?=
 DIR     ?= /opt/rss-translator
 
-.PHONY: all build push-config deploy-vps deploy clean help
+.PHONY: all build push-config deploy-cf deploy-vps deploy clean help
 
 help: ## 显示帮助
 	@echo "RSS Translator 部署"
 	@echo ""
 	@echo "  make build             打包 cron 为 dist/cron-vps.js"
 	@echo "  make push-config       推送 config.yaml 到 Cloudflare KV"
+	@echo "  make deploy-cf         推送配置 + 部署 Worker 到 Cloudflare"
 	@echo "  make deploy-vps        构建 + 推送配置 + 复制到 VPS + 安装定时任务"
 	@echo "  make deploy            git push + deploy-vps"
 	@echo "  make clean             清理构建产物"
@@ -32,6 +33,9 @@ build: ## 打包 cron-vps.ts → dist/cron-vps.js
 
 push-config: ## 推送 config.yaml 到 RSS_CONFIG KV
 	pnpm run push-config
+
+deploy-cf: push-config ## 推送配置 + 部署 Worker 到 Cloudflare
+	pnpm run deploy
 
 deploy-vps: build push-config ## 复制脚本到 VPS + 安装 systemd 定时任务
 	@test -n "$(RSS_VPS)" || (echo "❌ 请指定 RSS_VPS: make deploy-vps RSS_VPS=my-vps"; exit 1)
