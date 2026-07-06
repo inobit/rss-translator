@@ -1,0 +1,23 @@
+[Unit]
+Description=RSS Translator — 文章正文预缓存
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rss-translator
+EnvironmentFile=/opt/rss-translator/.env
+ExecStart=/usr/bin/node --experimental-strip-types /opt/rss-translator/cron-vps.ts articles
+
+# 安全加固
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/rss-translator
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# 日志 → journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rss-cron-articles

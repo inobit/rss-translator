@@ -1,8 +1,6 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
-import { fetchAndTranslatePage, fetchAndRenderPage, translateArticle, renderArticleHtml } from '../services/content';
-import { getConfig, getArticleCache, setArticleCache, deleteArticleCache, tryMarkArticlePending } from '../storage/kv';
-import { resolveProviders, getSourceEngines } from '../services/translate';
+import { getConfig, getArticleCache } from '../storage/kv';
 import { createLogger } from '../utils/logger';
 
 export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -16,7 +14,6 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     }
 
     const decodedUrl = decodeURIComponent(url);
-    const refreshCache = c.req.query('refresh') === '1';
 
     // 获取源配置
     const config = await getConfig(c.env);
@@ -51,90 +48,27 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
 
     const targetLang = config?.defaults?.target_lang ?? 'ZH';
 
-    // 优先从缓存取翻译好的 HTML
-    if (!refreshCache) {
-      const cached = await getArticleCache(c.env, source.id, decodedUrl, targetLang);
-      if (cached) {
-        logger.info(`Serving cached article: ${decodedUrl}`);
-        return new Response(cached, {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        });
-      }
-
-      // 缓存未命中：返回原文 HTML，异步翻译
-      try {
-        logger.info(`Cache miss, serving original: ${decodedUrl}`);
-        const { html: untranslatedHtml, article } = await fetchAndRenderPage(
-          decodedUrl, c.env, sourceId || undefined,
-        );
-
-        // 异步翻译并写入缓存（复用缓存 key，pending 由 setArticleCache 覆盖）
-        c.executionCtx.waitUntil((async () => {
-          const acquired = await tryMarkArticlePending(c.env, source.id, decodedUrl, targetLang);
-          if (!acquired) {
-            logger.info(`Translation already pending for: ${decodedUrl}`);
-            return;
-          }
-          logger.info(`Async translation started: ${decodedUrl}`);
-          try {
-            const engines = getSourceEngines(source, config?.defaults);
-            const resolvedProviders = resolveProviders(engines, c.env, config?.providers);
-            const primary = resolvedProviders[0] ?? null;
-            const fallbacks = resolvedProviders.slice(1);
-            const llmConfig = primary?.type === 'llm' ? primary.config : undefined;
-            const translated = await translateArticle(
-              article, c.env, primary?.name ?? 'deeplx', llmConfig,
-              config?.defaults?.max_input_tokens,
-              undefined,
-              fallbacks.length > 0 ? fallbacks : undefined,
-            );
-            const translatedHtml = renderArticleHtml(translated, decodedUrl);
-            await setArticleCache(c.env, source.id, decodedUrl, targetLang, translatedHtml);
-            logger.info(`Async translation done: ${decodedUrl}`);
-          } catch (err) {
-            logger.error(`Async translation failed: ${decodedUrl}`, err as Error);
-          }
-        })());
-
-        return new Response(untranslatedHtml, {
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        });
-      } catch (e) {
-        const err = e as Error;
-        logger.error(`Failed to process /raw (no cache): ${err.message}`, err);
-        return c.json({ error: err.message }, 502);
-      }
+    // 优先从缓存取翻译好的 HTML（VPS cron 负责写入缓存）
+    const cached = await getArticleCache(c.env, source.id, decodedUrl, targetLang);
+    if (cached) {
+      logger.info(`Serving cached article: ${decodedUrl}`);
+      return new Response(cached, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
     }
 
-    // refresh=1：同步翻译
+    // 缓存未命中：直接代理原文
+    logger.info(`Cache miss, proxying original: ${decodedUrl}`);
     try {
-      logger.info(`Translating on demand (refresh): ${decodedUrl}`);
-      const engines = getSourceEngines(source, config?.defaults);
-      const resolvedProviders = resolveProviders(engines, c.env, config?.providers);
-      const primary = resolvedProviders[0] ?? null;
-      const fallbacks = resolvedProviders.slice(1);
-      const llmConfig = primary?.type === 'llm' ? primary.config : undefined;
-      const translatedHtml = await fetchAndTranslatePage(
-        decodedUrl, c.env, sourceId || undefined, primary?.name, llmConfig,
-        config?.defaults?.max_input_tokens,
-        undefined,
-        fallbacks.length > 0 ? fallbacks : undefined,
-      );
-
-      // 先删旧缓存（防止配额耗尽后旧缓存残留），再异步写新缓存
-      if (refreshCache) {
-        await deleteArticleCache(c.env, source.id, decodedUrl, targetLang);
-      }
-      c.executionCtx.waitUntil(
-        setArticleCache(c.env, source.id, decodedUrl, targetLang, translatedHtml),
-      );
-
-      return new Response(translatedHtml, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      const resp = await fetch(decodedUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+      });
+      return new Response(resp.body, {
+        headers: { 'Content-Type': resp.headers.get('Content-Type') || 'text/html; charset=utf-8' },
       });
     } catch (e) {
       const err = e as Error;
-      logger.error(`Failed to process /raw (refresh): ${err.message}`, err);
+      logger.error(`Failed to proxy /raw: ${err.message}`, err);
       return c.json({ error: err.message }, 502);
     }
   });

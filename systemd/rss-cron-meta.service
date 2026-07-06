@@ -1,0 +1,21 @@
+[Unit]
+Description=RSS Translator — RSS 元信息预缓存
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rss-translator
+EnvironmentFile=/opt/rss-translator/.env
+ExecStart=/usr/bin/node --experimental-strip-types /opt/rss-translator/cron-vps.ts metadata
+
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/rss-translator
+RestrictAddressFamilies=AF_INET AF_INET6
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rss-cron-meta

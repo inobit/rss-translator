@@ -1,0 +1,11 @@
+[Unit]
+Description=RSS Translator 元信息缓存 — 每小时
+Requires=rss-cron-meta.service
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
