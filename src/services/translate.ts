@@ -134,13 +134,17 @@ function estimateTokens(text: string): number {
  * 支持多 provider 失败自动流转
  */
 export async function translateTexts(opts: TranslateOptions): Promise<string[]> {
+  const logger = createLogger(opts.env);
+  if (opts.fallbackProviders && opts.fallbackProviders.length > 0) {
+    const chain = [opts.engine, ...opts.fallbackProviders.map(fb => fb.name)].join(' → ');
+    logger.info(`Provider chain: ${chain}`);
+  }
   try {
     return await translateTextsInternal(opts);
   } catch (primaryError) {
     if (!opts.fallbackProviders || opts.fallbackProviders.length === 0) {
       throw primaryError;
     }
-    const logger = createLogger(opts.env);
     logger.warn(`Primary provider failed: ${(primaryError as Error).message}, trying ${opts.fallbackProviders.length} fallback(s)...`);
 
     let lastError = primaryError;

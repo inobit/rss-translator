@@ -315,6 +315,11 @@ async function translateTexts(
   const pendingTexts = texts.filter((t) => t);
   if (pendingTexts.length === 0) return texts.map(() => "");
 
+  if (opts.fallbackProviders && opts.fallbackProviders.length > 0) {
+    const chain = [engine, ...opts.fallbackProviders.map((fb) => fb.name)].join(" → ");
+    console.log(`${timestamp()} [INFO] Provider chain: ${chain}`);
+  }
+
   console.log(`${timestamp()} [INFO] Translating ${pendingTexts.length} texts via ${engine}`);
 
   const tryTranslate = async (): Promise<string[]> => {
