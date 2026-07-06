@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
 import { getConfig, getArticleCache } from '../storage/kv';
+import { fetchAndRenderPage } from '../services/content';
 import { createLogger } from '../utils/logger';
 
 export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
@@ -57,18 +58,16 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       });
     }
 
-    // 缓存未命中：直接代理原文
-    logger.info(`Cache miss, proxying original: ${decodedUrl}`);
+    // 缓存未命中：提取原文并渲染为格式化页面（不翻译）
+    logger.info(`Cache miss, formatting original: ${decodedUrl}`);
     try {
-      const resp = await fetch(decodedUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-      });
-      return new Response(resp.body, {
-        headers: { 'Content-Type': resp.headers.get('Content-Type') || 'text/html; charset=utf-8' },
+      const { html } = await fetchAndRenderPage(decodedUrl, c.env, source.id);
+      return new Response(html, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
       });
     } catch (e) {
       const err = e as Error;
-      logger.error(`Failed to proxy /raw: ${err.message}`, err);
+      logger.error(`Failed to format article: ${err.message}`, err);
       return c.json({ error: err.message }, 502);
     }
   });
