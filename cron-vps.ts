@@ -9,7 +9,7 @@
  * 通过 REST API 读写 Cloudflare KV，翻译结果 Worker 端直接读取。
  *
  * 环境变量（.env）：
- *   CF_ACCOUNT_ID       — Cloudflare 账户 ID
+ *   CLOUDFLARE_ACCOUNT_ID       — Cloudflare 账户 ID
  *   CF_KV_API_TOKEN     — API Token（Workers KV Storage 编辑权限，命名避免与 wrangler 冲突）
  *   CF_KV_CONFIG_ID     — RSS_CONFIG namespace ID
  *   CF_KV_CACHE_ID      — RSS_CACHE namespace ID

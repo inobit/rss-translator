@@ -4,7 +4,7 @@
  * 使现有 cron 逻辑无需修改即可复用。
  *
  * 依赖变量：
- *   CF_ACCOUNT_ID       — Cloudflare 账户 ID
+ *   CLOUDFLARE_ACCOUNT_ID       — Cloudflare 账户 ID
  *   CF_KV_API_TOKEN     — API Token（需 Workers KV Storage 编辑权限）
  *   CF_KV_CONFIG_ID     — RSS_CONFIG namespace ID
  *   CF_KV_CACHE_ID      — RSS_CACHE namespace ID
@@ -83,7 +83,7 @@ class RestKVNamespace {
 
 /** 从环境变量构建 VPS 用 WorkerEnv */
 export function createVpsEnv(): WorkerEnv {
-  const accountId = requireEnv("CF_ACCOUNT_ID");
+  const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
   const apiToken = requireEnv("CF_KV_API_TOKEN");
   const configNsId = requireEnv("CF_KV_CONFIG_ID");
   const cacheNsId = requireEnv("CF_KV_CACHE_ID");
