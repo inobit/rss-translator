@@ -6,10 +6,11 @@ const CONFIG_KEY = 'config';
 
 const ARTICLE_CACHE_PREFIX = 'cache:article:';
 const ARTICLE_CACHE_VERSION = 'v1';
-const ARTICLE_CACHE_TTL = 7 * 24 * 60 * 60; // 7 天
+const DEFAULT_ARTICLE_CACHE_TTL = 30 * 24 * 60 * 60; // 30 天
 
 const RSS_META_PREFIX = 'cache:rss:';
 const RSS_META_VERSION = 'v3';
+const DEFAULT_RSS_META_CACHE_TTL = 30 * 24 * 60 * 60; // 30 天
 
 /** pending 标记值，复用缓存 key，pending 由 setArticleCache/setRssMeta 覆盖 */
 const PENDING_MARKER = '__pending__';
@@ -65,10 +66,11 @@ export async function setRssMeta(
   sourceId: string,
   targetLang: string,
   meta: Record<string, RssItemMeta>,
+  expirationTtl?: number,
 ): Promise<void> {
   const key = rssMetaKey(sourceId, targetLang);
   await env.RSS_CACHE.put(key, JSON.stringify(meta), {
-    expirationTtl: ARTICLE_CACHE_TTL,
+    expirationTtl: expirationTtl ?? DEFAULT_RSS_META_CACHE_TTL,
   });
   logger.debug('RSS meta cache set', { key, entries: Object.keys(meta).length });
 }
@@ -136,10 +138,11 @@ export async function setArticleCache(
   url: string,
   targetLang: string,
   html: string,
+  expirationTtl?: number,
 ): Promise<void> {
   const key = articleCacheKey(sourceId, url, targetLang);
   await env.RSS_CACHE.put(key, html, {
-    expirationTtl: ARTICLE_CACHE_TTL,
+    expirationTtl: expirationTtl ?? DEFAULT_ARTICLE_CACHE_TTL,
   });
   logger.debug('Article cache set', { key });
 }

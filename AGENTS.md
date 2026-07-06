@@ -75,7 +75,7 @@ systemd/
 | 绑定 | 用途 |
 |------|------|
 | `RSS_CONFIG` | 环境变量（wrangler.toml vars，JSON 对象），存储 RSS 源列表和配置 |
-| `RSS_CACHE` | 文章完整 HTML 缓存 + 文本翻译缓存，key 格式 `cache:article:v1:<url_hash>:ZH`，TTL 7 天 |
+| `RSS_CACHE` | 文章完整 HTML 缓存 + RSS 元信息缓存，TTL 通过 `defaults.rss_cache_ttl` / `defaults.article_cache_ttl` 配置（天），默认 30 天 |
 
 ### 文章缓存 key 计算
 
@@ -121,7 +121,9 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
   "defaults": {
     "target_lang": "ZH",
     "engines": ["deepseek"],
-    "max_articles_per_run": 20
+    "max_articles_per_run": 20,
+    "rss_cache_ttl": 30,
+    "article_cache_ttl": 30
   }
 }
 ```
@@ -139,6 +141,8 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `providers.{name}.max_input_tokens` | LLM 单次请求最大输入 token 数，超过自动分批 |
 | `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |
 | `defaults.engines` | 全局默认 provider 链，source 未指定时使用 |
+| `defaults.rss_cache_ttl` | RSS 标题/摘要缓存天数，默认 30 |
+| `defaults.article_cache_ttl` | 文章正文缓存天数，默认 30 |
 
 ## Cron 定时任务
 

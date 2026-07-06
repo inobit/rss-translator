@@ -73,8 +73,10 @@ export interface RssConfig {
     engine?: TranslateEngine;
     /** 默认 provider 列表 */
     engines?: TranslateEngine[];
-    /** 翻译缓存天数，默认 30 */
-    cache_ttl_days?: number;
+    /** RSS 缓存天数，默认 30 */
+    rss_cache_ttl?: number;
+    /** 文章缓存天数，默认 30 */
+    article_cache_ttl?: number;
     /** 每次 cron 运行最多预缓存的文章数，默认 10 */
     max_articles_per_run?: number;
     /** 全局默认 LLM 单次请求最大输入 token 数（provider 级优先，默认 8192） */

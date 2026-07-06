@@ -60,6 +60,8 @@ defaults:
   max_articles_per_run: 20
   max_input_tokens: 8192
   target_lang: ZH
+  rss_cache_ttl: 30       # RSS 缓存天数，默认 30
+  article_cache_ttl: 30   # 文章缓存天数，默认 30
 
 providers:
   deepseek:              # LLM provider（需设置 DEEPSEEK_API_KEY secret）

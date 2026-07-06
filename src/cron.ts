@@ -19,6 +19,13 @@ import { createLogger } from "./utils/logger";
 /** 每次运行最多预缓存的文章数（默认值） */
 const DEFAULT_MAX_ARTICLES = 5;
 
+/** 默认缓存 TTL（天） */
+const DEFAULT_CACHE_TTL_DAYS = 30;
+
+function daysToSeconds(days: number): number {
+  return days * 24 * 60 * 60;
+}
+
 /**
  * scheduled 事件处理器
  */
@@ -53,6 +60,9 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
   const maxArticles =
     config.defaults?.max_articles_per_run ?? DEFAULT_MAX_ARTICLES;
   const requestIntervalMs = config.defaults?.request_interval_ms ?? 0;
+  const articleCacheTtl = daysToSeconds(
+    config.defaults?.article_cache_ttl ?? DEFAULT_CACHE_TTL_DAYS,
+  );
   const sources = config.sources.filter((s) => s.translate_body);
 
   if (sources.length === 0) {
@@ -129,7 +139,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
             requestIntervalMs,
             fallbacks.length > 0 ? fallbacks : undefined,
           );
-          await setArticleCache(env, source.id, item.link, targetLang, html);
+          await setArticleCache(env, source.id, item.link, targetLang, html, articleCacheTtl);
           cachedCount++;
           logger.info(
             `Article cache written ${cachedCount}/${maxArticles}: ${item.link}`,
@@ -164,6 +174,9 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
 
   const targetLang = config.defaults?.target_lang ?? "ZH";
   const requestIntervalMs = config.defaults?.request_interval_ms ?? 0;
+  const rssCacheTtl = daysToSeconds(
+    config.defaults?.rss_cache_ttl ?? DEFAULT_CACHE_TTL_DAYS,
+  );
   const sources = config.sources.filter((s) => s.translate);
 
   if (sources.length === 0) {
@@ -284,7 +297,7 @@ export async function preCacheRssMetadata(env: WorkerEnv): Promise<void> {
       }
 
       // 一次性写回聚合缓存
-      await setRssMeta(env, source.id, targetLang, metaCache);
+      await setRssMeta(env, source.id, targetLang, metaCache, rssCacheTtl);
       updatedCount++;
       logger.info(
         `RSS metadata cached for ${source.id}: ${uncached.length} items`,
