@@ -1,7 +1,7 @@
 import * as cheerio from 'cheerio';
 import { createLogger } from '../utils/logger';
 import type { WorkerEnv } from '../types';
-import { translateTexts, type LlmProviderConfig, type ResolvedProvider } from './translate';
+import { translateTexts, type LlmProviderConfig, type CloudflareProviderConfig, type ResolvedProvider } from './translate';
 
 export interface ArticleImage {
   src: string;
@@ -1297,15 +1297,20 @@ async function extractArticle(html: string, sourceId?: string): Promise<ArticleD
 /**
  * 翻译文章内容，保留结构化数据
  */
-export async function translateArticle(
-  article: ArticleData,
-  env: WorkerEnv,
-  engine: string,
-  llm?: LlmProviderConfig,
-  maxInputTokens?: number,
-  batchDelayMs?: number,
-  fallbackProviders?: ResolvedProvider[],
-): Promise<ArticleData> {
+export interface ArticleTranslateOptions {
+  article: ArticleData;
+  env: WorkerEnv;
+  engine: string;
+  llm?: LlmProviderConfig;
+  deeplx?: { endpoint: string; apiKey: string };
+  cloudflare?: CloudflareProviderConfig;
+  maxInputTokens?: number;
+  batchDelayMs?: number;
+  fallbackProviders?: ResolvedProvider[];
+}
+
+export async function translateArticle(opts: ArticleTranslateOptions): Promise<ArticleData> {
+  const { article, env, engine, llm, deeplx, cloudflare, maxInputTokens, batchDelayMs, fallbackProviders } = opts;
   const toTranslate: string[] = [];
 
   if (article.title) toTranslate.push(article.title);
@@ -1340,7 +1345,7 @@ export async function translateArticle(
   try {
     translated = await translateTexts({
       engine, texts: toTranslate, targetLang: 'ZH',
-      sourceLang: 'EN', env, llm,
+      sourceLang: 'EN', env, llm, deeplx, cloudflare,
       maxInputTokens,
       batchDelayMs,
       fallbackProviders,
@@ -1506,6 +1511,8 @@ export async function fetchAndTranslatePage(
   sourceId?: string,
   engine?: string,
   llm?: LlmProviderConfig,
+  deeplx?: { endpoint: string; apiKey: string },
+  cloudflare?: CloudflareProviderConfig,
   maxInputTokens?: number,
   batchDelayMs?: number,
   fallbackProviders?: ResolvedProvider[],
@@ -1522,7 +1529,10 @@ export async function fetchAndTranslatePage(
   const article = await extractArticle(html, sourceId);
   logger.info(`Extracted: title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
 
-  const translated = await translateArticle(article, env, engine ?? 'deeplx', llm, maxInputTokens, batchDelayMs, fallbackProviders);
+  const translated = await translateArticle({
+    article, env, engine: engine ?? 'deeplx', llm, deeplx, cloudflare,
+    maxInputTokens, batchDelayMs, fallbackProviders,
+  });
 
   return renderArticleHtml(translated, url);
 }

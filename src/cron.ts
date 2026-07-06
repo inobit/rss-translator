@@ -117,12 +117,18 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
           const fallbacks = resolvedProviders.slice(1);
           const llmProvider =
             primary?.type === "llm" ? primary.config : undefined;
+          const deeplxProvider =
+            primary?.type === "deeplx" ? primary.config : undefined;
+          const cloudflareProvider =
+            primary?.type === "cloudflare" ? primary.config : undefined;
           const html = await fetchAndTranslatePage(
             item.link,
             env,
             source.id,
             primary?.name,
             llmProvider,
+            deeplxProvider,
+            cloudflareProvider,
             config.defaults.max_input_tokens,
             requestIntervalMs,
             fallbacks.length > 0 ? fallbacks : undefined,

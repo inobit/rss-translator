@@ -152,7 +152,9 @@ export async function translateTexts(opts: TranslateOptions): Promise<string[]> 
           cloudflare: fb.type === 'cloudflare' ? fb.config : undefined,
           fallbackProviders: undefined, // 防止无限递归
         };
-        return await translateTextsInternal(fbOpts);
+        const result = await translateTextsInternal(fbOpts);
+        logger.info(`Fallback provider "${fb.name}" (${fb.type}) succeeded`);
+        return result;
       } catch (e) {
         const err = e as Error;
         lastError = err;
@@ -176,12 +178,16 @@ async function translateTextsInternal(opts: TranslateOptions): Promise<string[]>
 
   if (opts.deeplx) {
     const translatedBatch = await translateViaDeeplx(pendingTexts, targetLang, sourceLang, opts.deeplx);
-    return mapResults(texts, translatedBatch);
+    const result = mapResults(texts, translatedBatch);
+    logger.info(`Translated ${pendingTexts.length} texts via ${engine}: done`);
+    return result;
   }
 
   if (opts.cloudflare) {
     const translatedBatch = await translateViaCloudflare(pendingTexts, targetLang, sourceLang, opts.cloudflare);
-    return mapResults(texts, translatedBatch);
+    const result = mapResults(texts, translatedBatch);
+    logger.info(`Translated ${pendingTexts.length} texts via ${engine}: done`);
+    return result;
   }
 
   const maxTokens = opts.llm?.maxInputTokens ?? opts.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS;
@@ -216,7 +222,9 @@ async function translateTextsInternal(opts: TranslateOptions): Promise<string[]>
     allResults.push(...results);
   }
 
-  return mapResults(texts, allResults);
+  const result = mapResults(texts, allResults);
+  logger.info(`Translated ${pendingTexts.length} texts via ${engine}: done`);
+  return result;
 }
 
 function mapResults(texts: string[], translatedBatch: string[]): string[] {
