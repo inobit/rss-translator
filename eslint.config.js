@@ -14,6 +14,9 @@ export default [
       },
       globals: {
         ...globals.node,
+        ScheduledEvent: 'readonly',
+        ExecutionContext: 'readonly',
+        KVNamespace: 'readonly',
       },
     },
     plugins: {

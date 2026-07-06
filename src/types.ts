@@ -93,6 +93,7 @@ export interface WorkerEnv {
 }
 
 /** Bindings 类型（用于 Hono 类型推导） */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface Bindings extends WorkerEnv {}
 
 /** 翻译结果 */

@@ -39,6 +39,7 @@ export function parseRssXml(xml: string): ParsedRss | null {
       const items = normalizeItems(channel.item);
 
       // 提取 <rss> 或 <rdf:RDF> 的命名空间等属性
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { channel: _ch, ...rssAttrs } = rss;
 
       return {
@@ -136,6 +137,7 @@ function parseAtomFeed(feed: Record<string, unknown>): ParsedRss | null {
  * 格式化 RSS channel 以去除 item 后再重建
  */
 export function getChannelMetadata(channel: ParsedRssChannel) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { items: _items, ...meta } = channel;
   return meta;
 }
@@ -174,7 +176,7 @@ function fixValuelessAttributes(xml: string): string {
   // <[a-zA-Z_] 排除 CDATA(<!)、注释(<!--)、处理指令(<?)
   // [^>]* 确保不跨标签边界
   return xml.replace(/<[a-zA-Z_][^>]*>/g, (tag) => {
-    return tag.replace(/\s([a-zA-Z_:][\w:.\-]*)(?=\s|>|\/)/g, ' $1="true"');
+    return tag.replace(/\s([a-zA-Z_:][\w:.-]*)(?=\s|>|\/)/g, ' $1="true"');
   });
 }
 
