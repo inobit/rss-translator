@@ -3,6 +3,75 @@ import { createLogger } from '../utils/logger';
 import type { WorkerEnv } from '../types';
 import { translateTexts, type LlmProviderConfig, type CloudflareProviderConfig, type ResolvedProvider } from './translate';
 
+/** 文章内联链接元数据，提取时收集，翻译后用于还原 <a> 标签 */
+export interface ArticleLinkMeta {
+  n: number;    // 文章内唯一编号（从 1 开始）
+  url: string;  // 解析后的绝对 URL
+  text: string; // 原始链接文本（进入翻译批次）
+}
+
+/**
+ * 从 cheerio 元素提取文本，将 <a> 内联链接替换为 [↗N] 编号占位符，
+ * 并将链接元信息追加到 linksCollector 数组。
+ * [↗N] 使用纯 ASCII + 符号，对所有翻译引擎（LLM / Deeplx / Cloudflare）通用安全。
+ */
+function extractHtmlText(
+  $el: ReturnType<typeof cheerio.load>['fn'],
+  $: ReturnType<typeof cheerio.load>,
+  linksCollector?: ArticleLinkMeta[],
+): string {
+  const html = $el.html();
+  if (!html) return '';
+
+  const baseUrl = $('meta[property="og:url"]').attr('content')
+    || $('link[rel="canonical"]').attr('href')
+    || '';
+
+  const withMarkers = html.replace(
+    /<a\b[^>]*?\bhref\s*=\s*["']([^"']*)["'][^>]*>(.*?)<\/a>/gi,
+    (_m, href, content) => {
+      let resolved = href;
+      try { resolved = new URL(href, baseUrl || 'http://localhost/').href; } catch { /* 保持原值 */ }
+      const text = content.replace(/<[^>]*>/g, '').trim();
+      if (!text) return '';
+      if (linksCollector) {
+        const n = linksCollector.length + 1;
+        linksCollector.push({ n, url: resolved, text });
+        return `[↗${n}]`;
+      }
+      return text;
+    },
+  );
+
+  return withMarkers.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 将翻译后文本中的 [↗N] 占位符还原为 HTML <a> 标签。
+ * linkLookup: N → { url, translatedText } 的映射表，其余文本做 HTML 转义。
+ */
+function renderWithLinks(rawText: string, linkLookup: Map<number, { url: string; text: string }>): string {
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  let result = '';
+  let lastIndex = 0;
+  const re = /\[↗(\d+)\]/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = re.exec(rawText)) !== null) {
+    result += esc(rawText.slice(lastIndex, match.index));
+    const n = parseInt(match[1], 10);
+    const entry = linkLookup.get(n);
+    if (entry) {
+      result += `<a href="${esc(entry.url)}" target="_blank" rel="noopener noreferrer">${esc(entry.text)}</a>`;
+    } else {
+      result += esc(match[0]);
+    }
+    lastIndex = re.lastIndex;
+  }
+  result += esc(rawText.slice(lastIndex));
+  return result;
+}
+
 export interface ArticleImage {
   src: string;
   alt: string;
@@ -28,6 +97,8 @@ export interface ArticleData {
   images: ArticleImage[];
   paragraphs: string[];
   blocks: ContentBlock[];
+  links?: ArticleLinkMeta[];
+  _linkLookup?: Map<number, { url: string; text: string }>;
 }
 
 /** 每个 source 的文章提取器 */
@@ -179,7 +250,11 @@ function formatDateZh(dateStr: string): string {
 }
 
 /** 按 data-block 提取正文和图片（通用逻辑） */
-function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
+function extractDataBlocks(
+  $: ReturnType<typeof cheerio.load>,
+  linksCollector?: ArticleLinkMeta[],
+): ArticleData {
+  const lc = linksCollector ?? [];
   const images: ArticleImage[] = [];
   const paragraphs: string[] = [];
   const blocks: ContentBlock[] = [];
@@ -193,15 +268,15 @@ function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
       const $pTags = $el.is('p') ? $el : $el.find('p');
       const blockParas: string[] = [];
       $pTags.each((_j, pEl) => {
-        const text = $(pEl).text().trim();
-        if (text && text.length > 10) {
+        const text = extractHtmlText($(pEl), $, lc);
+        if (text && (text.length > 10 || text.includes('[↗'))) {
           paragraphs.push(text);
           blockParas.push(text);
         }
       });
       // 同时提取子标题（h2/h3/h4），作为独立 heading 块
       $el.find('h2, h3, h4').each((_j, hEl) => {
-        const text = $(hEl).text().trim();
+        const text = extractHtmlText($(hEl), $, lc);
         if (text && text.length > 2) {
           blocks.push({ type: 'heading', text });
         }
@@ -209,8 +284,8 @@ function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
       if (blockParas.length > 0) {
         blocks.push({ type: 'text', texts: blockParas });
       }
-    } else if (blockType.includes('heading')) {
-      const text = $el.text().trim();
+    } else if (blockType.includes('heading') || blockType === 'subheadline') {
+      const text = extractHtmlText($el, $, lc);
       if (text && text.length > 2) {
         blocks.push({ type: 'heading', text });
       }
@@ -220,14 +295,21 @@ function extractDataBlocks($: ReturnType<typeof cheerio.load>): ArticleData {
         images.push(img);
         blocks.push({ type: 'image', image: img });
       }
+    } else if (blockType === 'links' || blockType === 'topicList' || blockType === 'promoList') {
+      return false; // 后续 block 为非正文推荐/推广内容
     }
+    return; // cheerio .each(): void = 继续迭代
   });
 
-  return { title: '', images, paragraphs, blocks };
+  return { title: '', images, paragraphs, blocks, links: lc.length > 0 ? [...lc] : undefined };
 }
 
 /** 按 DOM 顺序提取页面内容元素，不依赖 [data-block] 等特定标记 */
-function extractInDomOrder($: ReturnType<typeof cheerio.load>): ArticleData {
+function extractInDomOrder(
+  $: ReturnType<typeof cheerio.load>,
+  linksCollector?: ArticleLinkMeta[],
+): ArticleData {
+  const lc = linksCollector ?? [];
   const images: ArticleImage[] = [];
   const paragraphs: string[] = [];
   const blocks: ContentBlock[] = [];
@@ -236,7 +318,7 @@ function extractInDomOrder($: ReturnType<typeof cheerio.load>): ArticleData {
     ? $('article').first()
     : $('main, [role="main"]').first();
   if (!$container.length) {
-    return { title: '', images, paragraphs, blocks };
+    return { title: '', images, paragraphs, blocks, links: lc.length > 0 ? [...lc] : undefined };
   }
 
   const elements: Array<
@@ -255,7 +337,7 @@ function extractInDomOrder($: ReturnType<typeof cheerio.load>): ArticleData {
     }
 
     if (tagName === 'p') {
-      const text = $(el).text().trim();
+      const text = extractHtmlText($(el), $, lc);
       if (!text || text.length <= 10) return;
       if (text === 'This video can not be played') return;
       if (text.startsWith('To play this video')) return;
@@ -285,7 +367,7 @@ function extractInDomOrder($: ReturnType<typeof cheerio.load>): ArticleData {
     }
   }
 
-  return { title: '', images, paragraphs, blocks };
+  return { title: '', images, paragraphs, blocks, links: lc.length > 0 ? [...lc] : undefined };
 }
 
 /** JSON-LD / meta 降级（视频页或没有 data-block 的页面） */
@@ -375,7 +457,9 @@ function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
     if (!date) date = meta.find('li, span').first().text().trim() || undefined;
   }
 
-  const data = extractDataBlocks($);
+  const linksCollector: ArticleLinkMeta[] = [];
+  const data = extractDataBlocks($, linksCollector);
+  let finalLinks = [...linksCollector];
   if (data.blocks.length === 0) {
     // 降级1：按 DOM 顺序提取（适用于无 [data-block] 的页面，如视频页）
     // 降级2：meta/json-ld 兜底 + 补充日期和缩略图
@@ -387,6 +471,7 @@ function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
       data.paragraphs.push(...domData.paragraphs);
       data.images.push(...domData.images);
       data.blocks.push(...domData.blocks);
+      if (domData.links) finalLinks.push(...domData.links);
       // DOM 提取没找到图片时，从 JSON-LD/meta 补充缩略图（放在最前面）
       if (domData.images.length === 0 && fallback.images.length > 0) {
         const fbImages = fallback.blocks.filter(b => b.type === 'image');
@@ -400,7 +485,11 @@ function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
     }
   }
 
-  return { title, author, role, date, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks };
+  return {
+    title, author, role, date,
+    images: data.images, paragraphs: data.paragraphs, blocks: data.blocks,
+    links: finalLinks.length > 0 ? finalLinks : undefined,
+  };
 }
 
 
@@ -456,7 +545,8 @@ function sciamExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): Ar
     || extractMeta($, 'meta[name="description"]')
     || extractMeta($, 'meta[property="og:description"]')
     || undefined;
-  const data = extractDataBlocks($);
+  const linksCollector: ArticleLinkMeta[] = [];
+  const data = extractDataBlocks($, linksCollector);
 
   // 从 JSON-LD 或 og:image 提取题图
   if (data.images.length === 0) {
@@ -492,7 +582,7 @@ function sciamExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): Ar
     data.blocks.push(...fallback.blocks);
   }
 
-  return { title, author, date, summary, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks };
+  return { title, author, date, summary, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -569,6 +659,8 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
   $('figure[data-spacefinder-type*="RichLink"]').remove();
   $('gu-island').remove();
 
+  const linksCollector: ArticleLinkMeta[] = [];
+
   const jsonLd = extractJsonLd($, rawHtml);
 
   const title = (jsonLd?.headline as string)
@@ -644,7 +736,7 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
 
       // 子标题
       if (tag === 'h2' && (cls.includes('dcr-') || cls.includes('article-'))) {
-        const text = $el.text().trim();
+        const text = extractHtmlText($el, $, linksCollector);
         if (text && text.length > 2) {
           blocks.push({ type: 'heading', text });
         }
@@ -653,8 +745,8 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
 
       // 段落
       if (tag === 'p') {
-        const text = $el.text().trim();
-        if (text && text.length > 10) {
+        const text = extractHtmlText($el, $, linksCollector);
+        if (text && (text.length > 10 || text.includes('[↗'))) {
           paragraphs.push(text);
           blocks.push({ type: 'text', texts: [text] });
         }
@@ -665,7 +757,7 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
       if (tag === 'ul' || tag === 'ol') {
         const items: string[] = [];
         $el.find('li').each((_j, liEl) => {
-          const text = $(liEl).text().trim();
+          const text = extractHtmlText($(liEl), $, linksCollector);
           if (text && text.length > 5) items.push(text);
         });
         if (items.length > 0) {
@@ -679,7 +771,7 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
       if (tag === 'blockquote') {
         const texts: string[] = [];
         $el.find('p').each((_j, pEl) => {
-          const text = $(pEl).text().trim();
+          const text = extractHtmlText($(pEl), $, linksCollector);
           if (text && text.length > 2) texts.push(text);
         });
         if (texts.length > 0) {
@@ -711,7 +803,7 @@ function guardianExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): 
     blocks.push(...fallback.blocks);
   }
 
-  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -721,7 +813,8 @@ function genericExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
   const jsonLd = extractJsonLd($);
   const title = (jsonLd?.headline as string) || fallbackTitle($);
 
-  const data = extractDataBlocks($);
+  const linksCollector: ArticleLinkMeta[] = [];
+  const data = extractDataBlocks($, linksCollector);
   if (data.blocks.length === 0) {
     const fallback = fallbackFromMeta($);
     data.images.push(...fallback.images);
@@ -734,6 +827,7 @@ function genericExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
     images: data.images,
     paragraphs: data.paragraphs,
     blocks: data.blocks,
+    links: linksCollector.length > 0 ? linksCollector : undefined,
   };
 }
 
@@ -747,6 +841,8 @@ function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
   $('.news-article--images-gallery').remove();
   $('.news-article--content--side-column').remove();
   $('.news-article--content-block--inline-image--items-nav').remove();
+
+  const linksCollector: ArticleLinkMeta[] = [];
 
   const title = $('h1 [itemprop="name headline"]').first().text().trim()
     || fallbackTitle($);
@@ -808,13 +904,13 @@ function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
       if ($el.hasClass('paragraph--type--content-block-text')) {
         const $pTags = $el.find('p');
         $pTags.each((_j, pEl) => {
-          const text = $(pEl).text().trim();
-          if (text && text.length > 10) {
+          const text = extractHtmlText($(pEl), $, linksCollector);
+          if (text && (text.length > 10 || text.includes('[↗'))) {
             // 子标题（加粗段落）
             const $strong = $(pEl).find('strong').first();
             if ($strong.length && $strong.text().trim().length > 2
               && $strong.text().trim().length < 60
-              && $(pEl).text().trim().length < 100) {
+              && extractHtmlText($(pEl), $, linksCollector).length < 100) {
               blocks.push({ type: 'heading', text: $strong.text().trim() });
               return;
             }
@@ -835,7 +931,7 @@ function mitNewsExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): 
     date = date || fallback.date;
   }
 
-  return { title, author, date, summary, images, paragraphs, blocks };
+  return { title, author, date, summary, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -846,6 +942,8 @@ function registerExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string):
   $('.bodytext .google-ad, .bodytext .articleList').remove();
   $('.articleFooter').remove();
   $('[class*="paywall"]').remove();
+
+  const linksCollector: ArticleLinkMeta[] = [];
 
   const title = $('.articleHeader h1.headline').first().text().trim()
     || $('h1').first().text().trim()
@@ -884,7 +982,7 @@ function registerExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string):
       const $p = $(el);
       // 跳过广告和噪音内部的 p
       if ($p.closest('.google-ad, .articleList, .paywall').length) return;
-      const text = $p.text().trim();
+      const text = extractHtmlText($p, $, linksCollector);
       if (text && text.length > 10) {
         paragraphs.push(text);
         blocks.push({ type: 'text', texts: [text] });
@@ -901,7 +999,7 @@ function registerExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string):
     date = date || fallback.date;
   }
 
-  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -911,6 +1009,8 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
   // 移除广告、newsletter 等噪音
   $('.ad-section, .wp-block-tds-ad-slot, .tds-cta-box, .tds-subscribe-newsletter').remove();
   $('[class*="newsletter"], [class*="paywall"]').remove();
+
+  const linksCollector: ArticleLinkMeta[] = [];
 
   const jsonLd = extractJsonLd($, rawHtml);
 
@@ -980,7 +1080,7 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
 
       // 标题
       if ($el.is('h2, h3, h4') || $el.hasClass('wp-block-heading')) {
-        const text = $el.text().trim();
+        const text = extractHtmlText($el, $, linksCollector);
         if (isReferencesHeading(text)) {
           inReferences = true;
           refTitle = text;
@@ -995,7 +1095,7 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
       // 段落
       if ($el.is('p') || $el.hasClass('wp-block-paragraph')) {
         const html = ($el.html() || '').trim();
-        const text = $el.text().trim();
+        const text = extractHtmlText($el, $, linksCollector);
         if (!text || text.length <= 10) return;
         // 参考文献区：保留原文（含 URL），不翻译
         if (inReferences) {
@@ -1037,7 +1137,7 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
       if ($el.is('ul, ol') || $el.hasClass('wp-block-list')) {
         const items: string[] = [];
         $el.find('li').each((_j, liEl) => {
-          const text = $(liEl).text().trim();
+          const text = extractHtmlText($(liEl), $, linksCollector);
           if (text && text.length > 5) items.push(text);
         });
         if (items.length > 0) {
@@ -1065,7 +1165,7 @@ function tdsExtract($: ReturnType<typeof cheerio.load>, rawHtml?: string): Artic
     blocks.push(...fallback.blocks);
   }
 
-  return { title, author, authorUrl, date, summary, images, paragraphs, blocks };
+  return { title, author, authorUrl, date, summary, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -1082,6 +1182,8 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
   // 移除 side column、footer、recent articles 等噪音
   $('#secondary, #sponsored-banner, #ft, .recent-articles, .entryFooter, .edit-page-link').remove();
   $('.metabox section[style*="promo"], .metabox .promo').remove();
+
+  const linksCollector: ArticleLinkMeta[] = [];
 
   const $entry = $('.entry.entryPage').first();
   const isBeat = $entry.find('.beat').length > 0;
@@ -1187,11 +1289,11 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
         const childTag = (child as { tagName?: string }).tagName?.toLowerCase() || '';
         // blockquote 内可能是 <p>/<ul>/<ol> 等，取全部文本
         if (childTag === 'p') {
-          const text = $child.text().trim();
+          const text = extractHtmlText($child, $, linksCollector);
           if (text && text.length > 2) quoteTexts.push(text);
         } else if (childTag === 'ul' || childTag === 'ol') {
           $child.find('li').each((_j, liEl) => {
-            const text = $(liEl).text().trim();
+            const text = extractHtmlText($(liEl), $, linksCollector);
             if (text && text.length > 5) quoteTexts.push(`• ${text}`);
           });
         }
@@ -1205,7 +1307,7 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
 
     // 标题
     if (['h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
-      const text = $el.text().trim();
+      const text = extractHtmlText($el, $, linksCollector);
       if (text && text.length > 2) {
         blocks.push({ type: 'heading', text });
       }
@@ -1224,7 +1326,9 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
           blocks.push({ type: 'image', image: img });
         }
         // 如果段落内只有图片没有文字，直接返回
-        const textWithoutImg = $el.clone().find('img, video').remove().end().text().trim();
+        const $cloneForText = $el.clone();
+        $cloneForText.find('img, video').remove();
+        const textWithoutImg = extractHtmlText($cloneForText, $, linksCollector);
         if (!textWithoutImg) return;
       }
       // 段落内嵌视频
@@ -1239,17 +1343,17 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
           blocks.push({ type: 'image', image: img });
         }
         // 提取视频前后的文字
-        const $clone = $el.clone();
-        $clone.find('video, img').remove();
-        const text = $clone.text().trim();
-        if (text && text.length > 10) {
+        const $cloneForText = $el.clone();
+        $cloneForText.find('video, img').remove();
+        const text = extractHtmlText($cloneForText, $, linksCollector);
+        if (text && (text.length > 10 || text.includes('[↗'))) {
           paragraphs.push(text);
           blocks.push({ type: 'text', texts: [text] });
         }
         return;
       }
 
-      const text = $el.text().trim();
+      const text = extractHtmlText($el, $, linksCollector);
       if (text && text.length > 10) {
         paragraphs.push(text);
         blocks.push({ type: 'text', texts: [text] });
@@ -1261,8 +1365,8 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
     if (tag === 'ul' || tag === 'ol') {
       const items: string[] = [];
       $el.find('li').each((_j, liEl) => {
-        const text = $(liEl).text().trim();
-        if (text && text.length > 5) items.push(text);
+          const text = extractHtmlText($(liEl), $, linksCollector);
+          if (text && text.length > 5) items.push(text);
       });
       if (items.length > 0) {
         paragraphs.push(...items);
@@ -1277,7 +1381,7 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
       $el.find('tr').each((_j, trEl) => {
         const cells: string[] = [];
         $(trEl).find('th, td').each((_k, cellEl) => {
-          cells.push($(cellEl).text().trim());
+          cells.push(extractHtmlText($(cellEl), $, linksCollector));
         });
         if (cells.length > 0) rows.push(cells.join(' | '));
       });
@@ -1351,7 +1455,7 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
     blocks.push(...fallback.blocks);
   }
 
-  return { title, author, date: dateStr, summary, images, paragraphs, blocks };
+  return { title, author, date: dateStr, summary, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
 
@@ -1408,6 +1512,7 @@ export interface ArticleTranslateOptions {
 export async function translateArticle(opts: ArticleTranslateOptions): Promise<ArticleData> {
   const { article, env, engine, llm, deeplx, cloudflare, maxInputTokens, batchDelayMs, fallbackProviders } = opts;
   const toTranslate: string[] = [];
+  let linkIdxOffset = 0;
 
   if (article.title) toTranslate.push(article.title);
   if (article.role) toTranslate.push(article.role);
@@ -1432,6 +1537,14 @@ export async function translateArticle(opts: ArticleTranslateOptions): Promise<A
       for (const t of block.texts) toTranslate.push(t);
     } else {
       for (const t of block.texts) toTranslate.push(t);
+    }
+  }
+
+  // 将链接文本追加到翻译批次末尾
+  if (article.links && article.links.length > 0) {
+    linkIdxOffset = toTranslate.length;
+    for (const link of article.links) {
+      toTranslate.push(link.text);
     }
   }
 
@@ -1476,6 +1589,17 @@ export async function translateArticle(opts: ArticleTranslateOptions): Promise<A
     }
   }
 
+  // 提取翻译后的链接文本，构建查找表
+  if (article.links && linkIdxOffset > 0) {
+    const linkLookup = new Map<number, { url: string; text: string }>();
+    for (let i = 0; i < article.links.length; i++) {
+      const link = article.links[i];
+      const translatedText = translated[linkIdxOffset + i] || link.text;
+      linkLookup.set(link.n, { url: link.url, text: translatedText });
+    }
+    article._linkLookup = linkLookup;
+  }
+
   article.paragraphs = article.blocks
     .filter(b => b.type === 'text')
     .flatMap(b => b.texts);
@@ -1491,6 +1615,7 @@ export async function translateArticle(opts: ArticleTranslateOptions): Promise<A
  */
 export function renderArticleHtml(article: ArticleData, originalUrl: string): string {
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const linkLookup = article._linkLookup;
 
   let bylineHtml = '';
   if (article.author || article.role || article.date) {
@@ -1509,7 +1634,7 @@ export function renderArticleHtml(article: ArticleData, originalUrl: string): st
 
   let summaryHtml = '';
   if (article.summary) {
-    summaryHtml = `<div class="summary">${esc(article.summary)}</div>`;
+    summaryHtml = `<div class="summary">${linkLookup ? renderWithLinks(article.summary, linkLookup) : esc(article.summary)}</div>`;
   }
 
   let bodyHtml = '';
@@ -1522,9 +1647,9 @@ export function renderArticleHtml(article: ArticleData, originalUrl: string): st
         ${img.copyright ? `<span class="copyright">${esc(img.copyright)}</span>` : ''}
       </figure>`;
     } else if (block.type === 'heading') {
-      bodyHtml += `<h2 class="subheading">${esc(block.text)}</h2>`;
+      bodyHtml += `<h2 class="subheading">${linkLookup ? renderWithLinks(block.text, linkLookup) : esc(block.text)}</h2>`;
     } else if (block.type === 'disclaimer') {
-      bodyHtml += `<aside class="disclaimer"><p>${esc(block.text)}</p></aside>`;
+      bodyHtml += `<aside class="disclaimer"><p>${linkLookup ? renderWithLinks(block.text, linkLookup) : esc(block.text)}</p></aside>`;
     } else if (block.type === 'references') {
       const items = block.items.map(it => `<p class="reference-item">${it}</p>`).join('\n');
       bodyHtml += `<section class="references"><h2 class="references-title">${esc(block.title)}</h2>${items}</section>`;
@@ -1532,9 +1657,9 @@ export function renderArticleHtml(article: ArticleData, originalUrl: string): st
       const langClass = block.language ? ` class="language-${esc(block.language)}"` : '';
       bodyHtml += `<pre class="code-block"><code${langClass}>${esc(block.code)}</code></pre>`;
     } else if (block.type === 'quote') {
-      bodyHtml += `<blockquote class="article-quote">${block.texts.map(t => `<p>${esc(t)}</p>`).join('\n')}</blockquote>`;
+      bodyHtml += `<blockquote class="article-quote">${block.texts.map(t => `<p>${linkLookup ? renderWithLinks(t, linkLookup) : esc(t)}</p>`).join('\n')}</blockquote>`;
     } else {
-      bodyHtml += block.texts.map(p => `<p>${esc(p)}</p>`).join('\n');
+      bodyHtml += block.texts.map(p => `<p>${linkLookup ? renderWithLinks(p, linkLookup) : esc(p)}</p>`).join('\n');
     }
   }
 
@@ -1562,6 +1687,8 @@ export function renderArticleHtml(article: ArticleData, originalUrl: string): st
   .article-image figcaption { font-size: 13px; color: #545658; padding: 8px 0 0; line-height: 1.4; }
   .article-image .copyright { font-size: 11px; color: #8a8c8e; }
   p { font-size: 18px; line-height: 1.7; margin-bottom: 18px; color: #141414; }
+  p a { color: #2e6ab0; text-decoration: none; }
+  p a:hover { color: #1a4a80; }
   .subheading { font-size: 20px; font-weight: 700; line-height: 1.3; margin: 32px 0 12px; color: #141414; }
   .disclaimer { font-size: 13px; font-style: italic; color: #8a8c8e; line-height: 1.6; margin: 28px 0 16px; padding: 14px 16px; background: #f7f7f7; border-radius: 6px; }
   .disclaimer p { font-size: inherit; color: inherit; margin: 0; }
