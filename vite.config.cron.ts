@@ -6,17 +6,21 @@ export default defineConfig({
     noExternal: true,
   },
   build: {
-    ssr: "cron-vps.ts",
+    ssr: true,
     outDir: "dist",
     target: "node22",
     minify: false,
     rollupOptions: {
+      input: {
+        "cron-vps": "cron-vps.ts",
+        "test-translate": "scripts/test-translate.ts",
+      },
       external: [
         ...builtinModules,
         ...builtinModules.map((m) => `node:${m}`),
       ],
       output: {
-        entryFileNames: "cron-vps.js",
+        entryFileNames: "[name].js",
       },
     },
   },
