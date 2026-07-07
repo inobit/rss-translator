@@ -13,7 +13,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         "cron-vps": "cron-vps.ts",
-        "test-translate": "scripts/test-translate.ts",
       },
       external: [
         ...builtinModules,
@@ -21,6 +20,7 @@ export default defineConfig({
       ],
       output: {
         entryFileNames: "[name].js",
+        codeSplitting: false,
       },
     },
   },
