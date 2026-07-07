@@ -1,0 +1,143 @@
+# RSS Translator 配置文件
+# 线上通过 RSS_CONFIG KV namespace 下发
+
+defaults:
+  engines:
+    - mock
+    - deeplx
+    - opencode
+    - nvidia
+    - cfllm
+    - deepseek
+  max_articles_per_run: 10
+  max_input_tokens: 8192
+  request_interval_ms: 1000
+  target_lang: ZH
+  rss_cache_ttl: 30
+  article_cache_ttl: 30
+
+providers:
+  mock:
+    type: mock
+  deeplx:
+    type: deeplx
+    endpoint: https://api.deeplx.org
+  deepseek:
+    endpoint: https://api.deepseek.com/v1/chat/completions
+    model: deepseek-v4-flash
+    max_input_tokens: 1000000
+  nvidia:
+    endpoint: https://integrate.api.nvidia.com/v1/chat/completions
+    model: deepseek-ai/deepseek-v4-flash
+    max_input_tokens: 256000
+  opencode:
+    endpoint: https://opencode.ai/zen/v1/chat/completions
+    model: big-pickle
+    max_input_tokens: 128000
+  huggingface:
+    endpoint: https://router.huggingface.co/v1/chat/completions
+    model: deepseek-ai/DeepSeek-V4-Flash
+    max_input_tokens: 1000000
+  cfai:
+    type: cloudflare
+    endpoint: https://api.cloudflare.com/client/v4/accounts/fc7e2afc2e45a6fa0a4e4eac9c0f36a5/ai/run
+    model: "@cf/meta/m2m100-1.2b"
+    api_key_name: CLOUDFLARE_API_KEY
+  cfllm:
+    endpoint: https://api.cloudflare.com/client/v4/accounts/fc7e2afc2e45a6fa0a4e4eac9c0f36a5/ai/v1/chat/completions
+    model: "@cf/zai-org/glm-4.7-flash"
+    api_key_name: CLOUDFLARE_API_KEY
+    max_input_tokens: 128000
+
+sources:
+  - id: bbc-world
+    name: BBC World
+    url: https://feeds.bbci.co.uk/news/world/rss.xml
+    title: BBC 国际新闻
+    domains:
+      - bbc.co.uk
+      - bbc.com
+    translate: true
+    translate_body: true
+
+  - id: bbc-business
+    name: BBC Business
+    url: https://feeds.bbci.co.uk/news/business/rss.xml
+    title: BBC 商业
+    domains:
+      - bbc.co.uk
+      - bbc.com
+    translate: true
+    translate_body: true
+
+  - id: bbc
+    name: BBC
+    url: https://feeds.bbci.co.uk/news/rss.xml
+    title: BBC 新闻
+    domains:
+      - bbc.co.uk
+      - bbc.com
+    translate: true
+    translate_body: true
+    enabled: false
+
+  - id: sciam
+    name: Scientific American
+    url: http://rss.sciam.com/ScientificAmerican-Global
+    title: 科学美国人
+    domains:
+      - scientificamerican.com
+    translate: true
+    translate_body: true
+
+  - id: guardian-ai
+    name: The Guardian AI
+    url: https://www.theguardian.com/technology/artificialintelligenceai/rss
+    title: 卫报 AI
+    domains:
+      - theguardian.com
+    translate: true
+    translate_body: true
+
+  - id: guardian-china
+    name: The Guardian China
+    url: https://www.theguardian.com/world/china/rss
+    title: 卫报 中国
+    domains:
+      - theguardian.com
+    translate: true
+    translate_body: true
+
+  - id: mit-news
+    name: MIT News
+    url: https://news.mit.edu/rss/feed
+    title: MIT 新闻
+    translate: true
+    translate_body: true
+
+  - id: theregister-ai
+    name: The Register AI/ML
+    url: https://www.theregister.com/software/ai_ml/headlines.atom
+    title: "The Register AI/ML 新闻"
+    domains:
+      - theregister.com
+    translate: true
+    translate_body: true
+
+  - id: tds
+    name: Towards Data Science
+    url: https://towardsdatascience.com/feed/
+    title: Towards Data Science
+    domains:
+      - towardsdatascience.com
+    translate: true
+    translate_body: true
+
+  - id: simonw
+    name: Simon Willison's Weblog
+    url: https://simonwillison.net/atom/everything/
+    title: Simon Willison 博客
+    domains:
+      - simonwillison.net
+    translate: true
+    translate_body: true

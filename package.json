@@ -16,7 +16,9 @@
     "cron-vps": "node --experimental-strip-types cron-vps.ts",
     "build:cron": "vite build --config vite.config.cron.ts",
     "build": "vite build --config vite.config.cron.ts",
-    "test:provider": "node --experimental-strip-types --env-file=.env scripts/test-provider.ts"
+    "test:provider": "node --experimental-strip-types --env-file=.env scripts/test-provider.ts",
+    "test:translate": "node --experimental-strip-types --env-file=.env scripts/test-translate.ts",
+    "clear-article-cache": "node --experimental-strip-types --env-file=.env scripts/clear-cache.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240401.0",

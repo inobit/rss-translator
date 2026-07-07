@@ -399,7 +399,7 @@ async function readInput(): Promise<string[]> {
 }
 
 async function main() {
-  const configPath = resolve(import.meta.dirname!, "..", "config.yaml");
+  const configPath = resolve(import.meta.dirname!, "..", "config.test.yaml");
   if (!existsSync(configPath)) {
     console.error(`❌ config.yaml not found at ${configPath}`);
     process.exit(1);
