@@ -409,8 +409,10 @@ function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
     if (dateMatch) date = dateMatch[1];
   }
 
-  const contentDiv = $("#articleContent").text() || "";
-  const enpMatch = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(contentDiv);
+  // 从 #ozoom 内 enpproperty 注释提取元数据（#articleContent 已在上方 remove）
+  let pageUrl: string | undefined;
+  const enpSource = $("#ozoom").html() || "";
+  const enpMatch = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(enpSource);
   if (enpMatch) {
     const xml = enpMatch[1].trim();
     if (!date) {
@@ -422,6 +424,8 @@ function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
       }
     }
     if (!author) { const am = /<author>([^<]+)<\/author>/i.exec(xml); if (am) author = am[1].trim(); }
+    const um = /<url>([^<]+)<\/url>/i.exec(xml);
+    if (um) pageUrl = um[1].trim();
   }
 
   const images: ArticleImage[] = [];
@@ -438,6 +442,32 @@ function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
 
     $ozoom.find("p").each((_i, el) => {
       const $p = $(el);
+
+      // 结构性选择器：p.patt 或 p 包含 img.picture-illustrating → 图片段落
+      const $img = $p.hasClass("patt")
+        ? $p.find("img").first()
+        : $p.find("img.picture-illustrating").first();
+      if ($img.length) {
+        const imgSrc = $img.attr("src") || "";
+        if (imgSrc) {
+          let resolvedSrc = imgSrc;
+          if (pageUrl) { try { resolvedSrc = new URL(imgSrc, pageUrl).href; } catch { /* keep */ } }
+
+          let alt = "";
+          const dataTitle = $img.attr("data-original-title");
+          if (dataTitle) {
+            alt = cheerio.load(dataTitle)("body").text()
+              .replace(/[\u00A0\u3000\s]+/g, " ")
+              .trim();
+          }
+          if (!alt) alt = $img.attr("alt") || "";
+
+          images.push({ src: resolvedSrc, alt });
+          blocks.push({ type: "image", image: { src: resolvedSrc, alt } });
+        }
+        return;
+      }
+
       let text = $p.text().trim();
       if (!text) return;
       if (/版 权 所 有/.test(text) || /Copyright\s*[©&]/.test(text)) return;

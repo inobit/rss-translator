@@ -1461,18 +1461,30 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
 
 // ================ 人民日报 提取器 ================
 
-/** 从页面注释 <!--enpproperty ... /enpproperty--> 中提取日期和作者 */
-function extractEnpProperty($: ReturnType<typeof cheerio.load>): { date?: string; author?: string } {
-  const contentDiv = $('#articleContent').text() || '';
-  const match = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(contentDiv);
-  if (!match) return {};
-  const xml = match[1].trim();
-  const dateMatch = /<date>([^<]+)<\/date>/i.exec(xml);
-  const authorMatch = /<author>([^<]+)<\/author>/i.exec(xml);
-  return {
-    date: dateMatch ? dateMatch[1].trim() : undefined,
-    author: authorMatch ? authorMatch[1].trim() : undefined,
-  };
+/** 从页面注释 <!--enpproperty ... /enpproperty--> 中提取日期、作者和页面 URL */
+function extractEnpProperty($: ReturnType<typeof cheerio.load>, rawHtml?: string): { date?: string; author?: string; pageUrl?: string } {
+  const sources: string[] = [
+    $('#articleContent').text() || '',
+    $('#ozoom').html() || '',
+  ];
+  if (rawHtml) sources.push(rawHtml);
+
+  for (const source of sources) {
+    const match = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(source);
+    if (match) {
+      const xml = match[1].trim();
+      const dateMatch = /<date>([^<]+)<\/date>/i.exec(xml);
+      const authorMatch = /<author>([^<]+)<\/author>/i.exec(xml);
+      const urlMatch = /<url>([^<]+)<\/url>/i.exec(xml);
+      return {
+        date: dateMatch ? dateMatch[1].trim() : undefined,
+        author: authorMatch ? authorMatch[1].trim() : undefined,
+        pageUrl: urlMatch ? urlMatch[1].trim() : undefined,
+      };
+    }
+  }
+
+  return {};
 }
 
 function peopleDailyExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
@@ -1506,7 +1518,7 @@ function peopleDailyExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: strin
   }
 
   // 从 enpproperty 补充元数据
-  const enp = extractEnpProperty($);
+  const enp = extractEnpProperty($, _rawHtml);
   if (!date && enp.date) {
     date = enp.date.replace(/\s.*$/, ''); // "2026-07-08 00:00:00:0" → "2026-07-08"
     date = formatDateZh(date);
@@ -1542,6 +1554,34 @@ function peopleDailyExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: strin
 
     $ozoom.find('p').each((_i, el) => {
       const $p = $(el);
+
+      // 结构性选择器：p.patt 或 p 包含 img.picture-illustrating → 图片段落
+      const $img = $p.hasClass('patt')
+        ? $p.find('img').first()
+        : $p.find('img.picture-illustrating').first();
+      if ($img.length) {
+        const imgSrc = $img.attr('src') || '';
+        if (imgSrc) {
+          let resolvedSrc = imgSrc;
+          if (enp.pageUrl) {
+            try { resolvedSrc = new URL(imgSrc, enp.pageUrl).href; } catch { /* 保留原值 */ }
+          }
+
+          let alt = '';
+          const dataTitle = $img.attr('data-original-title');
+          if (dataTitle) {
+            alt = cheerio.load(dataTitle)('body').text()
+              .replace(/[\u00A0\u3000\s]+/g, ' ')
+              .trim();
+          }
+          if (!alt) alt = $img.attr('alt') || '';
+
+          images.push({ src: resolvedSrc, alt });
+          blocks.push({ type: 'image', image: { src: resolvedSrc, alt } });
+        }
+        return;
+      }
+
       let text = $p.text().trim();
       if (!text) return;
 
