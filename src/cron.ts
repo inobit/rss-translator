@@ -74,6 +74,7 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
   }
 
   let cachedCount = 0;
+  let formattedCount = 0;
 
   // ===== 需要翻译正文的 source =====
   if (translateSources.length > 0) {
@@ -161,12 +162,10 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
     }
   }
 
-  // ===== 不需要翻译正文的 source：仅格式化并缓存 =====
-  if (noTranslateSources.length > 0 && cachedCount < maxArticles) {
+  // ===== 不需要翻译正文的 source：仅格式化并缓存（不占用翻译配额） =====
+  if (noTranslateSources.length > 0) {
     logger.info("Pre-caching formatted articles for no-translate sources");
     for (const source of noTranslateSources) {
-      if (cachedCount >= maxArticles) break;
-
       logger.info(`Pre-caching formatted articles for: ${source.id}`);
       try {
         const resp = await fetch(source.url, {
@@ -191,7 +190,6 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
         logger.info(`Parsed ${items.length} articles from ${source.id}`);
 
         for (const item of items) {
-          if (cachedCount >= maxArticles) break;
           if (!item.link) continue;
 
           const cached = await getArticleCache(env, source.id, item.link, targetLang);
@@ -206,9 +204,9 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
           try {
             const { html } = await fetchAndRenderPage(item.link, env, source.id);
             await setArticleCache(env, source.id, item.link, targetLang, html, articleCacheTtl);
-            cachedCount++;
+            formattedCount++;
             logger.info(
-              `Formatted article cached ${cachedCount}/${maxArticles}: ${item.link}`,
+              `Formatted article cached ${formattedCount}: ${item.link}`,
             );
           } catch (e) {
             const err = e as Error;
@@ -220,11 +218,12 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
         logger.error(`Error processing source ${source.id}: ${err.message}`);
       }
     }
+    logger.info(`Formatted article pre-cache complete: ${formattedCount} articles`);
   }
 
   const totalSources = translateSources.length + noTranslateSources.length;
   logger.info(
-    `Article pre-cache complete: cached ${cachedCount} new articles across ${totalSources} sources`,
+    `Article pre-cache complete: translated ${cachedCount}, formatted ${formattedCount} across ${totalSources} sources`,
   );
 }
 
