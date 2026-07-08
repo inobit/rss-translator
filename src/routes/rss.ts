@@ -92,9 +92,9 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         ...item,
       };
 
-      if (!noRewrite && source.translate_body && item.link) {
+      if (!noRewrite && sourceId && item.link) {
         const encodedUrl = encodeURIComponent(item.link);
-        const sourceParam = sourceId ? `&source=${encodeURIComponent(sourceId)}` : '';
+        const sourceParam = `&source=${encodeURIComponent(sourceId)}`;
         const baseUrl = new URL(c.req.url).origin;
         output.link = `${baseUrl}/raw?url=${encodedUrl}${sourceParam}&token=${encodeURIComponent(token)}`;
       }

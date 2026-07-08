@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
-import { getConfig, getArticleCache } from '../storage/kv';
+import { getConfig, getArticleCache, setArticleCache } from '../storage/kv';
 import { fetchAndRenderPage } from '../services/content';
 import { createLogger } from '../utils/logger';
 
@@ -28,6 +28,7 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     }
 
     const translateBody = source.translate_body ?? true;
+    const targetLang = config?.defaults?.target_lang ?? 'ZH';
 
     // URL 白名单校验：只允许访问配置中 source 域名下的 URL
     if (source.domains?.length) {
@@ -38,16 +39,31 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     }
 
     if (!translateBody) {
-      // 不翻译，直接代理原文
-      const resp = await fetch(decodedUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-      });
-      return new Response(resp.body, {
-        headers: { 'Content-Type': resp.headers.get('Content-Type') || 'text/html' },
-      });
-    }
+      // 检查格式化缓存
+      const cached = await getArticleCache(c.env, source.id, decodedUrl, targetLang);
+      if (cached) {
+        logger.info(`Serving cached article (no translate): ${decodedUrl}`);
+        return new Response(cached, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
 
-    const targetLang = config?.defaults?.target_lang ?? 'ZH';
+      // 缓存未命中：格式化原文并写入缓存
+      logger.info(`Formatting article (no translate): ${decodedUrl}`);
+      try {
+        const { html } = await fetchAndRenderPage(decodedUrl, c.env, source.id);
+        const ttl = (config?.defaults?.article_cache_ttl ?? 30) * 24 * 60 * 60;
+        await setArticleCache(c.env, source.id, decodedUrl, targetLang, html, ttl);
+        logger.info(`Formatted article cached (no translate): ${decodedUrl}`);
+        return new Response(html, {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      } catch (e) {
+        const err = e as Error;
+        logger.error(`Failed to format article: ${err.message}`, err);
+        return c.json({ error: err.message }, 502);
+      }
+    }
 
     // 优先从缓存取翻译好的 HTML（VPS cron 负责写入缓存）
     const cached = await getArticleCache(c.env, source.id, decodedUrl, targetLang);
@@ -58,7 +74,7 @@ export function registerRawRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       });
     }
 
-    // 缓存未命中：提取原文并渲染为格式化页面（不翻译）
+    // 缓存未命中：格式化原文返回（不缓存，避免覆盖 cron 写入的翻译版本）
     logger.info(`Cache miss, formatting original: ${decodedUrl}`);
     try {
       const { html } = await fetchAndRenderPage(decodedUrl, c.env, source.id);

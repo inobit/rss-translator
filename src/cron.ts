@@ -8,7 +8,7 @@ import {
   setRssMeta,
   urlHash,
 } from "./storage/kv";
-import { fetchAndTranslatePage } from "./services/content";
+import { fetchAndTranslatePage, fetchAndRenderPage } from "./services/content";
 import {
   resolveProviders,
   getSourceEngines,
@@ -63,100 +63,168 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
   const articleCacheTtl = daysToSeconds(
     config.defaults?.article_cache_ttl ?? DEFAULT_CACHE_TTL_DAYS,
   );
-  const sources = config.sources.filter((s) => s.translate_body);
+  const translateSources = config.sources.filter((s) => s.translate_body);
+  const noTranslateSources = config.sources.filter(
+    (s) => !s.translate_body && s.enabled !== false,
+  );
 
-  if (sources.length === 0) {
-    logger.info("No sources with translate_body enabled");
+  if (translateSources.length === 0 && noTranslateSources.length === 0) {
+    logger.info("No sources with articles to pre-cache");
     return;
   }
 
   let cachedCount = 0;
 
-  for (const source of sources) {
-    if (cachedCount >= maxArticles) break;
+  // ===== 需要翻译正文的 source =====
+  if (translateSources.length > 0) {
+    for (const source of translateSources) {
+      if (cachedCount >= maxArticles) break;
 
-    logger.info(`Pre-caching articles for: ${source.id}`);
-    try {
-      const resp = await fetch(source.url, {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36",
-        },
-      });
-      if (!resp.ok) {
-        logger.error(`Failed to fetch RSS for ${source.id}: ${resp.status}`);
-        continue;
-      }
-
-      const xml = await resp.text();
-      logger.info(`Fetched RSS for ${source.id}: ${xml.length} bytes`);
-      const parsed = parseRssXml(xml);
-      if (!parsed) {
-        logger.error(`Failed to parse RSS for ${source.id}`);
-        continue;
-      }
-
-      const items = parsed.channel.items;
-      logger.info(`Parsed ${items.length} articles from ${source.id}`);
-
-      for (const item of items) {
-        if (cachedCount >= maxArticles) break;
-        if (!item.link) continue;
-
-        const cached = await getArticleCache(env, source.id, item.link, targetLang);
-        if (cached) {
-          logger.info(`Article cache hit: ${item.link}`);
+      logger.info(`Pre-caching articles for: ${source.id}`);
+      try {
+        const resp = await fetch(source.url, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36",
+          },
+        });
+        if (!resp.ok) {
+          logger.error(`Failed to fetch RSS for ${source.id}: ${resp.status}`);
           continue;
         }
 
-        logger.info(
-          `Article cache miss, translating: ${item.title.slice(0, 60)}`,
-        );
-        try {
-          const engines = getSourceEngines(source, config.defaults);
-          const resolvedProviders = resolveProviders(
-            engines,
-            env,
-            config.providers,
-          );
-          const primary = resolvedProviders[0] ?? null;
-          const fallbacks = resolvedProviders.slice(1);
-          const llmProvider =
-            primary?.type === "llm" ? primary.config : undefined;
-          const deeplxProvider =
-            primary?.type === "deeplx" ? primary.config : undefined;
-          const cloudflareProvider =
-            primary?.type === "cloudflare" ? primary.config : undefined;
-          const html = await fetchAndTranslatePage(
-            item.link,
-            env,
-            source.id,
-            primary?.name,
-            llmProvider,
-            deeplxProvider,
-            cloudflareProvider,
-            config.defaults.max_input_tokens,
-            requestIntervalMs,
-            fallbacks.length > 0 ? fallbacks : undefined,
-          );
-          await setArticleCache(env, source.id, item.link, targetLang, html, articleCacheTtl);
-          cachedCount++;
-          logger.info(
-            `Article cache written ${cachedCount}/${maxArticles}: ${item.link}`,
-          );
-        } catch (e) {
-          const err = e as Error;
-          logger.warn(`Failed to pre-cache article: ${err.message}`);
+        const xml = await resp.text();
+        logger.info(`Fetched RSS for ${source.id}: ${xml.length} bytes`);
+        const parsed = parseRssXml(xml);
+        if (!parsed) {
+          logger.error(`Failed to parse RSS for ${source.id}`);
+          continue;
         }
+
+        const items = parsed.channel.items;
+        logger.info(`Parsed ${items.length} articles from ${source.id}`);
+
+        for (const item of items) {
+          if (cachedCount >= maxArticles) break;
+          if (!item.link) continue;
+
+          const cached = await getArticleCache(env, source.id, item.link, targetLang);
+          if (cached) {
+            logger.info(`Article cache hit: ${item.link}`);
+            continue;
+          }
+
+          logger.info(
+            `Article cache miss, translating: ${item.title.slice(0, 60)}`,
+          );
+          try {
+            const engines = getSourceEngines(source, config.defaults);
+            const resolvedProviders = resolveProviders(
+              engines,
+              env,
+              config.providers,
+            );
+            const primary = resolvedProviders[0] ?? null;
+            const fallbacks = resolvedProviders.slice(1);
+            const llmProvider =
+              primary?.type === "llm" ? primary.config : undefined;
+            const deeplxProvider =
+              primary?.type === "deeplx" ? primary.config : undefined;
+            const cloudflareProvider =
+              primary?.type === "cloudflare" ? primary.config : undefined;
+            const html = await fetchAndTranslatePage(
+              item.link,
+              env,
+              source.id,
+              primary?.name,
+              llmProvider,
+              deeplxProvider,
+              cloudflareProvider,
+              config.defaults.max_input_tokens,
+              requestIntervalMs,
+              fallbacks.length > 0 ? fallbacks : undefined,
+            );
+            await setArticleCache(env, source.id, item.link, targetLang, html, articleCacheTtl);
+            cachedCount++;
+            logger.info(
+              `Article cache written ${cachedCount}/${maxArticles}: ${item.link}`,
+            );
+          } catch (e) {
+            const err = e as Error;
+            logger.warn(`Failed to pre-cache article: ${err.message}`);
+          }
+        }
+      } catch (e) {
+        const err = e as Error;
+        logger.error(`Error processing source ${source.id}: ${err.message}`);
       }
-    } catch (e) {
-      const err = e as Error;
-      logger.error(`Error processing source ${source.id}: ${err.message}`);
     }
   }
 
+  // ===== 不需要翻译正文的 source：仅格式化并缓存 =====
+  if (noTranslateSources.length > 0 && cachedCount < maxArticles) {
+    logger.info("Pre-caching formatted articles for no-translate sources");
+    for (const source of noTranslateSources) {
+      if (cachedCount >= maxArticles) break;
+
+      logger.info(`Pre-caching formatted articles for: ${source.id}`);
+      try {
+        const resp = await fetch(source.url, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36",
+          },
+        });
+        if (!resp.ok) {
+          logger.error(`Failed to fetch RSS for ${source.id}: ${resp.status}`);
+          continue;
+        }
+
+        const xml = await resp.text();
+        const parsed = parseRssXml(xml);
+        if (!parsed) {
+          logger.error(`Failed to parse RSS for ${source.id}`);
+          continue;
+        }
+
+        const items = parsed.channel.items;
+        logger.info(`Parsed ${items.length} articles from ${source.id}`);
+
+        for (const item of items) {
+          if (cachedCount >= maxArticles) break;
+          if (!item.link) continue;
+
+          const cached = await getArticleCache(env, source.id, item.link, targetLang);
+          if (cached) {
+            logger.info(`Article cache hit: ${item.link}`);
+            continue;
+          }
+
+          logger.info(
+            `Article cache miss, formatting: ${item.title.slice(0, 60)}`,
+          );
+          try {
+            const { html } = await fetchAndRenderPage(item.link, env, source.id);
+            await setArticleCache(env, source.id, item.link, targetLang, html, articleCacheTtl);
+            cachedCount++;
+            logger.info(
+              `Formatted article cached ${cachedCount}/${maxArticles}: ${item.link}`,
+            );
+          } catch (e) {
+            const err = e as Error;
+            logger.warn(`Failed to pre-cache formatted article: ${err.message}`);
+          }
+        }
+      } catch (e) {
+        const err = e as Error;
+        logger.error(`Error processing source ${source.id}: ${err.message}`);
+      }
+    }
+  }
+
+  const totalSources = translateSources.length + noTranslateSources.length;
   logger.info(
-    `Article pre-cache complete: cached ${cachedCount} new articles across ${sources.length} sources`,
+    `Article pre-cache complete: cached ${cachedCount} new articles across ${totalSources} sources`,
   );
 }
 
