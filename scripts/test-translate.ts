@@ -204,7 +204,7 @@ function mapResults(texts: string[], translated: string[]): string[] {
   return results;
 }
 
-// ====== 内容提取（含链接占位符收集） ======
+// ====== 内容提取类型 ======
 
 interface ArticleLinkMeta {
   n: number;
@@ -218,10 +218,14 @@ interface ArticleImage {
 }
 
 interface ContentBlock {
-  type: "text" | "heading" | "image";
+  type: "text" | "heading" | "image" | "disclaimer" | "references" | "code" | "quote";
   texts?: string[];
   text?: string;
   image?: ArticleImage;
+  title?: string;
+  items?: string[];
+  code?: string;
+  language?: string;
 }
 
 interface ArticleData {
@@ -234,6 +238,8 @@ interface ArticleData {
   blocks: ContentBlock[];
   links?: ArticleLinkMeta[];
 }
+
+// ====== 内容提取（html 链接占位符收集） ======
 
 function extractHtmlText(
   $el: cheerio.Cheerio<any>,
@@ -266,7 +272,6 @@ function extractHtmlText(
   return withMarkers.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
 }
 
-/** 按 data-block 提取正文（通用逻辑） — 逻辑与 src/services/content.ts extractDataBlocks 一致 */
 function extractDataBlocks($: cheerio.CheerioAPI, linksCollector: ArticleLinkMeta[]): ArticleData {
   const lc = linksCollector;
   const images: ArticleImage[] = [];
@@ -296,20 +301,19 @@ function extractDataBlocks($: cheerio.CheerioAPI, linksCollector: ArticleLinkMet
     } else if (blockType.includes("image") || blockType === "video") {
       const $img = $el.find("img").first();
       if ($img.length) {
-        const img = { src: $img.attr("src") || "", alt: $img.attr("alt") || "" };
+        const img: ArticleImage = { src: $img.attr("src") || "", alt: $img.attr("alt") || "" };
         images.push(img);
         blocks.push({ type: "image", image: img });
       }
     } else if (blockType === "links" || blockType === "topicList" || blockType === "promoList") {
-      return false; // 后续 block 为非正文推荐/推广内容
+      return false;
     }
-    return; // cheerio .each(): void = 继续迭代
+    return;
   });
 
   return { title: "", images, paragraphs, blocks };
 }
 
-/** 降级：按 DOM 顺序提取 */
 function extractInDomOrder($: cheerio.CheerioAPI, linksCollector: ArticleLinkMeta[]): ArticleData {
   const images: ArticleImage[] = [];
   const paragraphs: string[] = [];
@@ -325,11 +329,8 @@ function extractInDomOrder($: cheerio.CheerioAPI, linksCollector: ArticleLinkMet
     if (["img", "picture", "figure", "video"].includes(tagName)) {
       const $img = $(el).find("img").first();
       if ($img.length) {
-        const img = { src: $img.attr("src") || "", alt: $img.attr("alt") || "" };
-        if (!images.some((e) => e.src === img.src)) {
-          images.push(img);
-          elements.push({ type: "image", img });
-        }
+        const img: ArticleImage = { src: $img.attr("src") || "", alt: $img.attr("alt") || "" };
+        if (!images.some((e) => e.src === img.src)) { images.push(img); elements.push({ type: "image", img }); }
       }
       return;
     }
@@ -368,18 +369,14 @@ function bbcExtract($: cheerio.CheerioAPI): ArticleData {
     const $time = meta.find("time").first();
     date = $time.attr("datetime") || $time.text().trim() || undefined;
   }
-
   const linksCollector: ArticleLinkMeta[] = [];
   const data = extractDataBlocks($, linksCollector);
-
   if (data.blocks.length === 0) {
     const domData = extractInDomOrder($, linksCollector);
     data.paragraphs.push(...domData.paragraphs);
     data.images.push(...domData.images);
     data.blocks.push(...domData.blocks);
   }
-
-  // 无图片时从 og:image 降级（视频页等常见场景）
   if (data.images.length === 0) {
     const ogImg = $('meta[property="og:image"]').attr("content");
     if (ogImg) {
@@ -388,11 +385,91 @@ function bbcExtract($: cheerio.CheerioAPI): ArticleData {
       data.blocks.unshift({ type: "image", image: { src: ogImg, alt } });
     }
   }
-
   return { title, author, date, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
-// ====== 渲染 ======
+/** 人民日报提取器 */
+function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
+  $(".top, .nav, .paper-box, .swiper-box, .date-box, .art-btn, #articleContent").remove();
+  $(".news, .art-btn, #go-top, script, input, [class*=\"Copyright\"]").remove();
+
+  const $h1 = $(".article h1").first();
+  const title = ($h1.find("p").first().text() || $h1.text()).trim();
+
+  const $h2 = $(".article h2").first();
+  const subtitle = ($h2.find("p").first().text() || $h2.text()).trim() || undefined;
+
+  const secText = $(".sec").first().text().trim() || "";
+  let author: string | undefined;
+  let date: string | undefined;
+  if (secText) {
+    const authorMatch = /^(.+?)(?:\s|\u00A0)+《人民日报》/.exec(secText);
+    if (authorMatch && authorMatch[1].trim()) author = authorMatch[1].trim();
+    const dateMatch = /（(\d{4}年\d{1,2}月\d{1,2}日)/.exec(secText);
+    if (dateMatch) date = dateMatch[1];
+  }
+
+  const contentDiv = $("#articleContent").text() || "";
+  const enpMatch = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(contentDiv);
+  if (enpMatch) {
+    const xml = enpMatch[1].trim();
+    if (!date) {
+      const dm = /<date>([^<]+)<\/date>/i.exec(xml);
+      if (dm) {
+        const isoDate = dm[1].trim().replace(/\s.*$/, "");
+        const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoDate);
+        if (isoMatch) date = `${isoMatch[1]}年${parseInt(isoMatch[2], 10)}月${parseInt(isoMatch[3], 10)}日`;
+      }
+    }
+    if (!author) { const am = /<author>([^<]+)<\/author>/i.exec(xml); if (am) author = am[1].trim(); }
+  }
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  const ogImage = $('meta[property="og:image"]').attr("content");
+  if (ogImage) { images.push({ src: ogImage, alt: title }); blocks.push({ type: "image", image: { src: ogImage, alt: title } }); }
+
+  const $ozoom = $("#ozoom");
+  if ($ozoom.length) {
+    if (subtitle && subtitle.length > 1) blocks.push({ type: "heading", text: subtitle });
+    const isReporterCredit = (text: string) => /^[（(](?:本报记者|新华社).+[）)]$/.test(text) && text.length < 150;
+
+    $ozoom.find("p").each((_i, el) => {
+      const $p = $(el);
+      let text = $p.text().trim();
+      if (!text) return;
+      if (/版 权 所 有/.test(text) || /Copyright\s*[©&]/.test(text)) return;
+      if (text === "*** ***" || text === "***" || text === "（相关报道见第二版）") return;
+      if (isReporterCredit(text)) return;
+      const $strong = $p.find("strong, b").first();
+      if ($strong.length && $strong.text().trim() === text) {
+        text = text.replace(/^\u3000+/g, "");
+        if (text.length > 2 && text.length < 80) { blocks.push({ type: "heading", text }); return; }
+      }
+      text = text.replace(/^[\u3000\s]+/g, "");
+      paragraphs.push(text);
+      blocks.push({ type: "text", texts: [text] });
+    });
+  }
+
+  if (blocks.filter(b => b.type === "text").length === 0) {
+    const ogImg = $('meta[property="og:image"]').attr("content");
+    const metaDesc = $('meta[name="description"]').attr("content") || "";
+    if (ogImg) { images.push({ src: ogImg, alt: title }); blocks.push({ type: "image", image: { src: ogImg, alt: title } }); }
+    if (metaDesc) { paragraphs.push(metaDesc); blocks.push({ type: "text", texts: [metaDesc] }); }
+  }
+
+  return { title, author, date, images, paragraphs, blocks };
+}
+
+function extractArticle(html: string, sourceId?: string): ArticleData {
+  const $ = cheerio.load(html);
+  $("script, style, noscript, nav, footer, aside").remove();
+  if (sourceId === "people-daily") return peopleDailyExtract($);
+  return bbcExtract($);
+}
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -435,12 +512,20 @@ function renderArticleHtml(article: ArticleData, originalUrl: string, linkLookup
   let bodyHtml = "";
   for (const block of article.blocks) {
     if (block.type === "image") {
-      const img = block.image!;
+      const img = block.image;
       bodyHtml += `<figure class="article-image"><img src="${esc(img.src)}" alt="${esc(img.alt)}" loading="lazy">${img.alt ? `<figcaption>${esc(img.alt)}</figcaption>` : ""}</figure>`;
     } else if (block.type === "heading") {
-      bodyHtml += `<h2 class="subheading">${linkLookup ? renderWithLinks(block.text!, linkLookup) : esc(block.text!)}</h2>`;
+      bodyHtml += `<h2 class="subheading">${linkLookup ? renderWithLinks(block.text, linkLookup) : esc(block.text)}</h2>`;
+    } else if (block.type === "disclaimer") {
+      bodyHtml += `<aside class="disclaimer"><p>${linkLookup ? renderWithLinks(block.text, linkLookup) : esc(block.text)}</p></aside>`;
+    } else if (block.type === "quote") {
+      bodyHtml += block.texts.map((p) => `<p>${linkLookup ? renderWithLinks(p, linkLookup) : esc(p)}</p>`).join("\n");
+    } else if (block.type === "code") {
+      bodyHtml += `<pre><code>${esc(block.code)}</code></pre>`;
+    } else if (block.type === "references") {
+      bodyHtml += block.items.map((it) => `<p class="reference-item">${it}</p>`).join("\n");
     } else {
-      bodyHtml += block.texts!.map((p) => `<p>${linkLookup ? renderWithLinks(p, linkLookup) : esc(p)}</p>`).join("\n");
+      bodyHtml += block.texts.map((p) => `<p>${linkLookup ? renderWithLinks(p, linkLookup) : esc(p)}</p>`).join("\n");
     }
   }
 
@@ -482,12 +567,6 @@ function renderArticleHtml(article: ArticleData, originalUrl: string, linkLookup
 }
 
 // ====== 主流程 ======
-
-function extractArticle(html: string): ArticleData {
-  const $ = cheerio.load(html);
-  $("script, style, noscript, nav, footer, aside").remove();
-  return bbcExtract($);
-}
 
 async function main() {
   const url = process.argv[2];
@@ -531,7 +610,7 @@ async function main() {
   const html = await resp.text();
 
   // 5. 提取
-  const article = extractArticle(html);
+  const article = await extractArticle(html, sourceId);
   console.log(`Title: ${article.title.slice(0, 60)}`);
   console.log(`Blocks: ${article.blocks.length}, Images: ${article.images.length}, Links: ${article.links?.length ?? 0}`);
   if (article.links && article.links.length > 0) {
@@ -544,8 +623,10 @@ async function main() {
   if (article.title) toTranslate.push(article.title);
   if (article.summary) toTranslate.push(article.summary);
   for (const b of article.blocks) {
-    if (b.type === "heading" && b.text) toTranslate.push(b.text);
-    else if (b.texts) for (const t of b.texts) toTranslate.push(t);
+    if (b.type === "heading") toTranslate.push(b.text);
+    else if (b.type === "text" || b.type === "quote") for (const t of b.texts) toTranslate.push(t);
+    else if (b.type === "disclaimer") toTranslate.push(b.text);
+    else if (b.type === "references" && b.title) toTranslate.push(b.title);
   }
   let linkOffset = 0;
   if (article.links && article.links.length > 0) {
@@ -570,8 +651,10 @@ async function main() {
   if (article.title) article.title = translated[idx++] || article.title;
   if (article.summary) article.summary = translated[idx++] || article.summary;
   for (const b of article.blocks) {
-    if (b.type === "heading" && b.text) b.text = translated[idx++] || b.text;
-    else if (b.texts) for (let i = 0; i < b.texts.length; i++) b.texts[i] = translated[idx++] || b.texts[i];
+    if (b.type === "heading") b.text = translated[idx++] || b.text;
+    else if (b.type === "text" || b.type === "quote") for (let i = 0; i < b.texts.length; i++) b.texts[i] = translated[idx++] || b.texts[i];
+    else if (b.type === "disclaimer") b.text = translated[idx++] || b.text;
+    else if (b.type === "references" && b.title) b.title = translated[idx++] || b.title;
   }
 
   // 8. 构建链接查找表

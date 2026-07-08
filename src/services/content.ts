@@ -1459,6 +1459,127 @@ function simonwExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): A
 }
 
 
+// ================ 人民日报 提取器 ================
+
+/** 从页面注释 <!--enpproperty ... /enpproperty--> 中提取日期和作者 */
+function extractEnpProperty($: ReturnType<typeof cheerio.load>): { date?: string; author?: string } {
+  const contentDiv = $('#articleContent').text() || '';
+  const match = /<!--enpproperty\s+([\s\S]*?)\/enpproperty-->/i.exec(contentDiv);
+  if (!match) return {};
+  const xml = match[1].trim();
+  const dateMatch = /<date>([^<]+)<\/date>/i.exec(xml);
+  const authorMatch = /<author>([^<]+)<\/author>/i.exec(xml);
+  return {
+    date: dateMatch ? dateMatch[1].trim() : undefined,
+    author: authorMatch ? authorMatch[1].trim() : undefined,
+  };
+}
+
+function peopleDailyExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
+  // 移除噪音元素
+  $('.top, .nav, .paper-box, .swiper-box, .date-box, .art-btn, #articleContent').remove();
+  $('.news, .article-box .art-btn, #go-top, script, input[type="hidden"]').remove();
+  $('.right-main .date-box, .right-main .swiper-box').remove();
+  $('[class*="Copyright"], div:contains("人 民 网 版 权 所 有")').remove();
+
+  // 标题：.article h1 内可能有 <p> 嵌套
+  const $h1 = $('.article h1').first();
+  const title = ($h1.find('p').first().text() || $h1.text()).trim() || fallbackTitle($);
+
+  // 副标题
+  const $h2 = $('.article h2').first();
+  const subtitle = ($h2.find('p').first().text() || $h2.text()).trim() || undefined;
+
+  // 作者和日期
+  const secText = $('.sec').first().text().trim() || '';
+  let author: string | undefined;
+  let date: string | undefined;
+
+  if (secText) {
+    const authorMatch = /^(.+?)(?:\s|\u00A0)+《人民日报》/.exec(secText);
+    if (authorMatch && authorMatch[1].trim()) {
+      author = authorMatch[1].trim();
+    }
+    // 中文日期格式
+    const dateMatch = /（(\d{4}年\d{1,2}月\d{1,2}日)/.exec(secText);
+    if (dateMatch) date = dateMatch[1];
+  }
+
+  // 从 enpproperty 补充元数据
+  const enp = extractEnpProperty($);
+  if (!date && enp.date) {
+    date = enp.date.replace(/\s.*$/, ''); // "2026-07-08 00:00:00:0" → "2026-07-08"
+    date = formatDateZh(date);
+  }
+  if (!author && enp.author) author = enp.author;
+  if (!author) {
+    const metaAuthor = $('meta[name="author"]').attr('content')?.trim();
+    if (metaAuthor && metaAuthor !== '第001版' && !/^\d+/.test(metaAuthor)) {
+      author = metaAuthor;
+    }
+  }
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // og:image 作为可能的题图
+  const ogImage = $('meta[property="og:image"]').attr('content');
+  if (ogImage) {
+    images.push({ src: ogImage, alt: title });
+    blocks.push({ type: 'image', image: { src: ogImage, alt: title } });
+  }
+
+  // 提取正文
+  const $ozoom = $('#ozoom');
+  if ($ozoom.length) {
+    if (subtitle && subtitle.length > 1) {
+      blocks.push({ type: 'heading', text: subtitle });
+    }
+
+    const isReporterCredit = (text: string) =>
+      /^[（(](?:本报记者|新华社).+[）)]$/.test(text) && text.length < 150;
+
+    $ozoom.find('p').each((_i, el) => {
+      const $p = $(el);
+      let text = $p.text().trim();
+      if (!text) return;
+
+      // 跳过版权声明
+      if (/版 权 所 有/.test(text) || /Copyright\s*[©&]/.test(text)) return;
+      if (text === '*** ***' || text === '***' || text === '（相关报道见第二版）') return;
+      if (isReporterCredit(text)) return;
+
+      // 子标题（strong/b 包裹的整段）
+      const $strong = $p.find('strong, b').first();
+      if ($strong.length && $strong.text().trim() === text) {
+        text = text.replace(/^\u3000+/g, '');
+        if (text.length > 2 && text.length < 80) {
+          blocks.push({ type: 'heading', text });
+          return;
+        }
+      }
+
+      // 去除段首全角空格
+      text = text.replace(/^[\u3000\s]+/g, '');
+
+      paragraphs.push(text);
+      blocks.push({ type: 'text', texts: [text] });
+    });
+  }
+
+  // 内容为空时降级
+  if (blocks.filter(b => b.type === 'text').length === 0) {
+    const fallback = fallbackFromMeta($);
+    images.push(...fallback.images);
+    paragraphs.push(...fallback.paragraphs);
+    blocks.push(...fallback.blocks);
+  }
+
+  return { title, author, date, images, paragraphs, blocks };
+}
+
+
 // ================ 注册表 ================
 
 const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
@@ -1472,6 +1593,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'theregister-ai': { extract: registerExtract },
   'tds': { extract: tdsExtract },
   'simonw': { extract: simonwExtract },
+  'people-daily': { extract: peopleDailyExtract },
 };
 
 

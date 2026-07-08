@@ -141,3 +141,12 @@ sources:
       - simonwillison.net
     translate: true
     translate_body: true
+
+  - id: people-daily
+    name: 人民日报
+    url: https://plink.anyfeeder.com/people-daily
+    title: 人民日报
+    domains:
+      - paper.people.com.cn
+    translate: false
+    translate_body: false
