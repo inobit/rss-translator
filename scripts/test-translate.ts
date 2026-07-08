@@ -388,6 +388,148 @@ function bbcExtract($: cheerio.CheerioAPI): ArticleData {
   return { title, author, date, images: data.images, paragraphs: data.paragraphs, blocks: data.blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
 }
 
+/** 新华网（news.cn）提取器 */
+function newsCnExtract($: cheerio.CheerioAPI): ArticleData {
+  $(".fix-ewm, .topAd, .adv, ins[data-ycad-slot], .main-right, .relatedNews, .nextpage, .bookList, .foot").remove();
+
+  const title = $("#wxtitle").text().trim()
+    || $(".header.domPC h1 .title").first().text().trim()
+    || $(".mheader.domMobile h1 .title").first().text().trim()
+    || $("h1").first().text().trim();
+
+  // 日期：优先结构化的 meta + PC 端时间，降级到移动端
+  let date: string | undefined;
+  const metaDate = $("meta[name=\"publishdate\"]").attr("content");
+  const timeText = $(".header-time .time").first().text().trim();
+  if (metaDate) date = metaDate + (timeText ? ` ${timeText}` : "");
+  if (!date) {
+    const year = $(".header-time .year em").first().text().trim();
+    const month = $(".header-time .day em").first().text().trim();
+    const day = $(".header-time .day em").eq(1).text().trim();
+    if (year && month && day) {
+      date = `${year}/${month}/${day}${timeText ? " " + timeText : ""}`;
+    }
+  }
+  if (!date) {
+    const mobileInfo = $(".mheader.domMobile .info").first().text().trim();
+    if (mobileInfo) {
+      const dateMatch = /^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/.exec(mobileInfo);
+      if (dateMatch) date = dateMatch[1];
+    }
+  }
+
+  // 作者/来源：格式为 "来源 责任编辑: 编辑名"
+  const metaAuthor = $("meta[name=\"author\"]").attr("content");
+  const metaSource = $("meta[name=\"source\"]").attr("content");
+  const editorText = $("#articleEdit .editor").first().text().trim();
+  let editorName: string | undefined;
+  if (editorText) {
+    const name = editorText.replace(/^【?责任编辑[：:]\s*/, "").replace(/\s*】?$/, "").trim();
+    if (name) editorName = name;
+  }
+  const source = metaAuthor?.trim() || metaSource?.trim();
+  let author: string | undefined;
+  if (source && editorName) {
+    author = `${source} 责任编辑: ${editorName}`;
+  } else if (editorName) {
+    author = `责任编辑: ${editorName}`;
+  } else if (source) {
+    author = source;
+  }
+
+  const contentId = $("meta[name=\"contentid\"]").attr("content");
+  let baseUrl: string | undefined;
+  if (contentId) {
+    const datePart = contentId.slice(0, 8);
+    const idPart = contentId.slice(8);
+    baseUrl = `http://www.news.cn/${datePart}/${idPart}/`;
+  }
+
+  const isCaptionText = ($el: cheerio.Cheerio<any>, text: string): boolean => {
+    if (text.length > 120) return false;
+    const $span = $el.find("span").first();
+    if ($span.length) {
+      const style = $span.attr("style") || "";
+      if (style.includes("楷体") || style.includes("KaiTi")) return true;
+    }
+    return false;
+  };
+
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+  const linksCollector: ArticleLinkMeta[] = [];
+
+  const $content = $("#detailContent");
+  if ($content.length) {
+    const children = $content.children().toArray();
+
+    for (let i = 0; i < children.length; i++) {
+      const el = children[i];
+      const $el = $(el);
+      const tagName = el.type === "tag" ? (el as any).name?.toLowerCase() : "";
+      if (tagName !== "p") continue;
+
+      const $video = $el.find("span.pageVideo").first();
+      if ($video.length) {
+        const poster = $video.attr("poster");
+        if (poster) {
+          images.push({ src: poster, alt: "" });
+          blocks.push({ type: "image", image: { src: poster, alt: "" } });
+        }
+        continue;
+      }
+
+      const $img = $el.find("img").first();
+      if ($img.length) {
+        let src = $img.attr("src") || "";
+        if (src.startsWith("//")) src = "https:" + src;
+        else if (!src.startsWith("http") && baseUrl) {
+          try { src = new URL(src, baseUrl).href; } catch { /* keep */ }
+        }
+
+        let alt = "";
+        const nextEl = children[i + 1];
+        if (nextEl) {
+          const $next = $(nextEl);
+          const nextText = $next.text().trim();
+          if (nextText && isCaptionText($next, nextText)) {
+            alt = nextText;
+            i++;
+          }
+        }
+
+        images.push({ src, alt });
+        blocks.push({ type: "image", image: { src, alt } });
+        continue;
+      }
+
+      let text = extractHtmlText($el, $, linksCollector);
+      if (!text) continue;
+      text = text.replace(/^[\u3000\s]+/g, "");
+      if (!text) continue;
+
+      paragraphs.push(text);
+      blocks.push({ type: "text", texts: [text] });
+    }
+  }
+
+  if (blocks.filter(b => b.type === "text").length === 0) {
+    const ogImg = $('meta[property="og:image"]').attr("content");
+    const metaDesc = $('meta[name="description"]').attr("content") || "";
+    if (ogImg) {
+      images.push({ src: ogImg, alt: title });
+      blocks.push({ type: "image", image: { src: ogImg, alt: title } });
+    }
+    if (metaDesc) {
+      paragraphs.push(metaDesc);
+      blocks.push({ type: "text", texts: [metaDesc] });
+    }
+  }
+
+  return { title, author, date, images, paragraphs, blocks, links: linksCollector.length > 0 ? linksCollector : undefined };
+}
+
 /** 人民日报提取器 */
 function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
   $(".top, .nav, .paper-box, .swiper-box, .date-box, .art-btn, #articleContent").remove();
@@ -497,6 +639,7 @@ function peopleDailyExtract($: cheerio.CheerioAPI): ArticleData {
 function extractArticle(html: string, sourceId?: string): ArticleData {
   const $ = cheerio.load(html);
   $("script, style, noscript, nav, footer, aside").remove();
+  if (sourceId === "news-cn") return newsCnExtract($);
   if (sourceId === "people-daily") return peopleDailyExtract($);
   return bbcExtract($);
 }

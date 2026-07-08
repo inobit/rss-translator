@@ -142,6 +142,16 @@ sources:
     translate: true
     translate_body: true
 
+  - id: news-cn
+    name: 新华社新闻
+    url: https://plink.anyfeeder.com/newscn/whxw
+    title: 新华社
+    domains:
+      - news.cn
+      - xinhuanet.com
+    translate: false
+    translate_body: false
+
   - id: people-daily
     name: 人民日报
     url: https://plink.anyfeeder.com/people-daily
