@@ -70,11 +70,22 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     if (source.logo) {
       const imageTitle = source.title || (channelMeta.title as string) || source.name;
       const imageLink = (channelMeta.link as string) || source.url;
+      // 保留现有字段后，将 logo 相关元素放在最前面
+      const existingMeta = { ...channelMeta };
+      for (const key of Object.keys(channelMeta)) {
+        delete channelMeta[key];
+      }
+      channelMeta['webfeeds:icon'] = source.logo;
       channelMeta.image = {
         url: source.logo,
         title: imageTitle,
         link: imageLink,
       };
+      Object.assign(channelMeta, existingMeta);
+      // 注册 webfeeds 命名空间
+      if (parsed.rssAttrs) {
+        parsed.rssAttrs['@_xmlns:webfeeds'] = 'http://webfeeds.org/rss/1.0';
+      }
     }
 
     // 翻译：从 per-source 聚合缓存取，未命中保留原文（VPS cron 负责写入缓存）
