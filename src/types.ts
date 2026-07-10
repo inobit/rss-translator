@@ -60,6 +60,8 @@ export interface RssSource {
   engine?: TranslateEngine;
   /** 翻译 provider 列表，按顺序尝试，失败自动流转到下一个 */
   engines?: TranslateEngine[];
+  /** RSS channel 的 logo 图片 URL，设置后将替换（或添加）channel 级别的 <image> 元素 */
+  logo?: string;
 }
 
 /** KV 中存储的全局配置 */

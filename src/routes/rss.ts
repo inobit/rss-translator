@@ -67,6 +67,16 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
       channelMeta.title = source.title;
     }
 
+    if (source.logo) {
+      const imageTitle = source.title || (channelMeta.title as string) || source.name;
+      const imageLink = (channelMeta.link as string) || source.url;
+      channelMeta.image = {
+        url: source.logo,
+        title: imageTitle,
+        link: imageLink,
+      };
+    }
+
     // 翻译：从 per-source 聚合缓存取，未命中保留原文（VPS cron 负责写入缓存）
     if (source.translate && channel.items.length > 0) {
       const metaCache = await getRssMeta(c.env, cacheKey, targetLang);
