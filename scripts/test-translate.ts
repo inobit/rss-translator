@@ -241,6 +241,28 @@ interface ArticleData {
 
 // ====== 内容提取（html 链接占位符收集） ======
 
+/**
+ * 解码 HTML 实体为对应 Unicode 字符。
+ * cheerio 的 $el.html() 会保留原始实体（&nbsp;、&#8217; 等），
+ * 需要在提取纯文本后解码，避免后续 esc() 时产生双重转义（&amp;nbsp;）。
+ */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/gi, "\u00a0")
+    .replace(/&#(\d+);/g, (_m, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_m, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&(mdash|ndash|lsquo|rsquo|ldquo|rdquo|hellip|rsaquo|lsaquo|laquo|raquo);/gi, (_m, name) => {
+      const map: Record<string, string> = {
+        "mdash": "\u2014", "ndash": "\u2013",
+        "lsquo": "\u2018", "rsquo": "\u2019",
+        "ldquo": "\u201c", "rdquo": "\u201d",
+        "hellip": "\u2026", "rsaquo": "\u203a",
+        "lsaquo": "\u2039", "laquo": "\u00ab", "raquo": "\u00bb",
+      };
+      return map[name.toLowerCase()] ?? _m;
+    });
+}
+
 function extractHtmlText(
   $el: cheerio.Cheerio<any>,
   $: cheerio.CheerioAPI,
@@ -269,7 +291,7 @@ function extractHtmlText(
     },
   );
 
-  return withMarkers.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim();
+  return decodeHtmlEntities(withMarkers.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim());
 }
 
 function extractDataBlocks($: cheerio.CheerioAPI, linksCollector: ArticleLinkMeta[]): ArticleData {
