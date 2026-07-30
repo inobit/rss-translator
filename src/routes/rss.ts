@@ -81,6 +81,8 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
         title: imageTitle,
         link: imageLink,
       };
+      delete existingMeta['webfeeds:icon'];
+      delete existingMeta.image;
       Object.assign(channelMeta, existingMeta);
       // 注册 webfeeds 命名空间
       if (parsed.rssAttrs) {
