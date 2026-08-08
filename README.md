@@ -49,7 +49,7 @@ Worker 端只读 KV 缓存，缓存命中直接返回翻译版，未命中返回
 编辑 `config.yaml`，然后推送 KV：
 
 ```bash
-pnpm run config:push
+pnpm run push-config
 ```
 
 ```yaml
@@ -102,6 +102,29 @@ sources:
 
 ## 部署
 
+### 使用 Makefile
+
+项目提供 Makefile 封装常用部署操作：
+
+| 目标 | 说明 |
+|------|------|
+| `make build` | 打包 cron 为 `dist/cron-vps.js` |
+| `make push-config` | 推送 `config.yaml` 到 Cloudflare KV |
+| `make deploy-cf` | 推送配置 + 部署 Worker 到 Cloudflare |
+| `make deploy-vps` | 构建 + 推送配置 + 复制到 VPS + 安装定时任务 |
+| `make deploy` | `git push` + `deploy-vps` |
+| `make clean` | 清理构建产物 |
+| `make help` | 显示帮助 |
+
+必需变量 `RSS_VPS`（VPS 地址或 `user@host`），可选变量 `DIR`（VPS 目录，默认 `/opt/rss-translator`）：
+
+```bash
+make deploy-vps RSS_VPS=my-vps
+make deploy RSS_VPS=admin@10.0.0.1
+```
+
+### 手动部署（首次）
+
 ```bash
 # 首次
 npx wrangler kv namespace create RSS_CONFIG
@@ -109,7 +132,7 @@ npx wrangler kv namespace create RSS_CACHE
 # 填写 wrangler.toml 中的 KV namespace id
 npx wrangler secret put ACCESS_TOKEN
 npx wrangler secret put DEEPSEEK_API_KEY
-pnpm run config:push
+pnpm run push-config
 pnpm run deploy
 
 # 后续
@@ -137,6 +160,38 @@ sudo systemctl enable --now rss-cron-articles.timer rss-cron-meta.timer
 
 # 查看日志
 sudo journalctl -u rss-cron-articles.service -f
+```
+
+## 发版（Release）
+
+打 tag 触发 GitHub Actions 自动构建并发布：
+
+```bash
+git tag v0.1.0      # tag 版本必须与 package.json version 一致
+git push --tags
+```
+
+workflow 自动完成：版本一致性校验 → `pnpm build` 打包 cron → 生成 `rss-translator-<tag>.tar.gz` → 创建 GitHub Release（release notes 按 Conventional Commits 自动分组）。
+
+**Release 内容 = VPS 部署包**（Worker 由 `wrangler deploy` 从源码构建，不包含在 Release 中）：
+
+```
+rss-translator-<tag>.tar.gz
+├── dist/cron-vps.js        # 自包含单文件，node 直接运行
+├── systemd/                # 4 个 .service + .timer
+├── .env.example
+└── README.txt              # VPS 部署步骤
+```
+
+VPS 从 Release 部署（无需 `git clone` + `pnpm install`）：
+
+```bash
+curl -LO https://github.com/inobit/rss-translator/releases/download/v0.1.0/rss-translator-v0.1.0.tar.gz
+sudo mkdir -p /opt/rss-translator && sudo chown $USER /opt/rss-translator
+tar -xzf rss-translator-v0.1.0.tar.gz -C /opt/rss-translator --strip-components=1
+cd /opt/rss-translator
+cp .env.example .env && vim .env
+# 按 README.txt 安装 systemd 定时任务
 ```
 
 ## 恢复 CF Cron（付费计划）
