@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: '.node-version'
+
+      - name: Setup pnpm
+        uses: pnpm/setup@v2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate version consistency
+        run: |
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::Version mismatch: tag is v$TAG_VERSION but package.json is $PKG_VERSION"
+            exit 1
+          fi
+          echo "✅ Version consistency check passed: v$TAG_VERSION"
+
+      - name: Build
+        run: pnpm build
+
+      - name: Create release package
+        run: |
+          mkdir -p release/rss-translator
+          cp -r dist release/rss-translator/
+          cp systemd/rss-cron-*.service systemd/rss-cron-*.timer release/rss-translator/systemd/
+          cp .env.example release/rss-translator/
+          cat > release/rss-translator/README.txt << 'EOF'
+          RSS Translator ${GITHUB_REF_NAME} — VPS 定时任务部署包
+          ======================================================
+          本包仅包含 VPS 端定时翻译任务所需文件，Worker 部署请直接
+          使用仓库源码执行 `pnpm run deploy`。
+
+          快速开始：
+          1. 解压本包到目标目录（如 /opt/rss-translator）
+          2. cp .env.example .env 并填写配置
+             （CF_KV_API_TOKEN / CF_KV_CONFIG_ID / CF_KV_CACHE_ID /
+               provider API key 等，参考仓库 .env.example 注释）
+          3. 安装 systemd 定时任务：
+             sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.service /etc/systemd/system/
+             sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.timer /etc/systemd/system/
+             sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.service /etc/systemd/system/
+             sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.timer /etc/systemd/system/
+             sudo systemctl daemon-reload
+             sudo systemctl enable --now rss-cron-articles.timer rss-cron-meta.timer
+          4. 手动测试：
+             node dist/cron-vps.js articles
+             node dist/cron-vps.js metadata
+
+          查看日志：
+             sudo journalctl -u rss-cron-articles.service -f
+          EOF
+          cd release
+          tar -czf rss-translator-${GITHUB_REF_NAME}.tar.gz rss-translator
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release/rss-translator-*.tar.gz
+          generate_release_notes: true
