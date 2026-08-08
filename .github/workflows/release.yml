@@ -43,7 +43,7 @@ jobs:
         run: |
           mkdir -p release/rss-translator
           cp -r dist release/rss-translator/
-          cp systemd/rss-cron-*.service systemd/rss-cron-*.timer release/rss-translator/systemd/
+          cp -r systemd release/rss-translator/
           cp .env.example release/rss-translator/
           cat > release/rss-translator/README.txt << 'EOF'
           RSS Translator ${GITHUB_REF_NAME} — VPS 定时任务部署包
