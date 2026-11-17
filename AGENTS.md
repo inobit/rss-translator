@@ -8,12 +8,14 @@ Cloudflare Worker（免费计划）+ instabox(Docker) box 的 RSS 翻译代理�
 用户 RSS 阅读器
   │
   ├─ GET /rss?source=bbc-world&token=xxx → 翻译后的 RSS XML（KV 成品缓存）
-  └─ GET /raw?url=...&source=...&token=xxx → 翻译后的 HTML 文章（KV 成品缓存）
+  ├─ GET /raw?url=...&source=...&token=xxx → 翻译后的 HTML 文章（KV 成品缓存）
+  └─ GET /merge?token=xxx                     → 所有源合并后的单一 RSS（KV 组装）
 
 CF Worker（免费计划，纯读 + 极轻转发，不跑 cheerio/LLM）
   │
   ├─ /rss → 纯读 KV 成品 XML → miss 转发 instabox 即时组装 + 后台补译
   ├─ /raw → 纯读 KV 成品 HTML → miss 转发 instabox 即时格式化 + 后台翻译
+  ├─ /merge → 转发 box 组装各源成品（不拉取、不翻译），补全相对链接
   └─ /scheduled 每 10min → POST INSTABOX_WAKE_URL?mode=full（纯触发器，不阻塞）
         │
         ▼
@@ -59,6 +61,8 @@ src/
 ├── routes/
 │   ├── rss.ts         # GET /rss — 纯读 KV 成品 XML，miss 转 box；相对 link 动态补 origin/token
 │   ├── raw.ts         # GET /raw — 纯读 KV 成品 HTML，miss 转 box；域名白名单校验
+│   ├── merge.ts       # GET /merge — 转发 box 组装合并 feed，补全相对链接
+│   ├── link-rewrite.ts # 成品 XML 相对 /raw 链接 → 绝对地址 + token（rss/merge 共用）
 │   └── refresh.ts     # GET /refresh — 保留但未注册（box 替代）
 ├── middleware/
 │   └── auth.ts        # Token 鉴权（?token=xxx）
@@ -156,6 +160,12 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
     "articles_per_source": 8,
     "rss_cache_ttl": 30,
     "article_cache_ttl": 30
+  },
+  "merge": {
+    "title": "RSS 综合阅读",
+    "description": "各源翻译后的合并信息流",
+    "title_prefix": "[{name}] ",
+    "add_category": true
   }
 }
 ```
@@ -171,6 +181,10 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `providers.{name}.model` | 模型名，LLM 类型必填；`type: cloudflare` 时模型已在 URL 中可留空 |
 | `providers.{name}.api_key_name` | 显式指定 Cloudflare secret 名称，优先级高于默认的 `{NAME}_API_KEY`；多个 provider 可共享同一个 key |
 | `providers.{name}.max_input_tokens` | LLM 单次请求最大输入 token 数，超过自动分批 |
+| `merge.title` / `merge.description` / `merge.link` | /merge 合并 feed 的 channel 元信息（link 默认取首个源）|
+| `merge.logo` | /merge 的 channel 图片，须为图片直链；不配则不输出 `<image>` |
+| `merge.title_prefix` | item 标题前缀模板，`{name}` = 源 title，默认 `"[{name}] "`，设 `""` 关闭 |
+| `merge.add_category` | 是否给 item 加 `<category>` 标注来源，默认 `true` |
 | `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |
 | `defaults.sources_per_run` | instabox 每轮处理的源数量，默认 5 |
 | `defaults.articles_per_source` | instabox 每个源每轮处理的文章数量，默认 8 |
@@ -236,6 +250,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 - Worker 非敏感配置在 `wrangler.toml` `[vars]`（仅 `LOG_LEVEL`）；`INSTABOX_WAKE_URL` / `INSTABOX_BOX_URL` **由 Dashboard 管理**，不写入 wrangler.toml（避免部署覆盖）
 - 密钥通过 `npx wrangler secret put` 或 Dashboard 设置（`ACCESS_TOKEN`、`INSTABOX_TOKEN`、各 provider `{NAME}_API_KEY`）
 - box 运行用 `.env` 文件（CF KV + provider key + `INSTABOX_TOKEN`，docker compose `env_file: .env` 挂载），不要提交真实值
+- `/merge` 的 channel logo 由 `config.merge.logo` 指定（图片直链）；未配则不输出 `<image>`
 - 多 provider 共享 key：配置 `api_key_name` 指向同一个 secret 名
 
 ## 部署步骤（Worker + box）

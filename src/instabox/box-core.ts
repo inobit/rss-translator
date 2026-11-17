@@ -392,6 +392,9 @@ export async function buildMergedRss(
 
   const allItems: { item: Record<string, unknown>; pubDate: number }[] = [];
   let firstLink = '';
+  // 汇总各源成品的命名空间声明（media:/dc:/content:/atom: 等），
+  // 否则带前缀元素在合并 XML 中会变成 unbound prefix，不符合 XML 规范
+  const mergedAttrs: Record<string, unknown> = { '@_version': '2.0' };
 
   for (const source of config.sources) {
     if (!sourceEnabled(source)) continue;
@@ -401,6 +404,11 @@ export async function buildMergedRss(
     if (!parsed) continue;
     if (!firstLink && typeof parsed.channel.link === 'string') {
       firstLink = parsed.channel.link;
+    }
+    if (parsed.rssAttrs) {
+      for (const [k, v] of Object.entries(parsed.rssAttrs)) {
+        if (k.startsWith('@_xmlns') && !(k in mergedAttrs)) mergedAttrs[k] = v;
+      }
     }
 
     const sourceLabel = source.title || source.name || source.id;
@@ -440,6 +448,7 @@ export async function buildMergedRss(
     link: mergeCfg.link ?? firstLink,
     language: 'zh-CN',
   };
+  // logo 取 config.merge.logo；未配置则不输出 image
   if (mergeCfg.logo) {
     channelMeta.image = {
       url: mergeCfg.logo,
@@ -448,7 +457,7 @@ export async function buildMergedRss(
     };
   }
 
-  return buildRssXml(channelMeta, allItems.map((x) => x.item), { '@_version': '2.0' });
+  return buildRssXml(channelMeta, allItems.map((x) => x.item), mergedAttrs);
 }
 
 /** 解析 RSS pubDate 为时间戳，失败返回 0（排序靠后） */

@@ -9,9 +9,20 @@ Cloudflare Worker 上的 RSS 翻译代理：Worker 纯读 KV 成品，instabox b
 ```
 GET /rss?source=bbc-world&token=<ACCESS_TOKEN>          → 翻译后的 RSS XML
 GET /raw?url=...&source=bbc-world&token=<ACCESS_TOKEN>  → 翻译后的文章 HTML
+GET /merge?token=<ACCESS_TOKEN>                          → 所有源合并后的单一 RSS
 ```
 
-把 `/rss` 链接导入任意 RSS 阅读器即可。`token` 即 Worker 的 `ACCESS_TOKEN` secret。
+把 `/rss` 链接导入任意 RSS 阅读器即可；想一个 feed 看全部源就用 `/merge`。
+`token` 即 Worker 的 `ACCESS_TOKEN` secret。
+
+### /merge 合并 feed
+
+纯读各源成品组装（不现场拉取、不触发翻译），按 `pubDate` 倒序：
+
+- channel 元信息由 `config.merge` 控制（`title` / `description` / `link` / `logo`）
+- 每条 item 标题加来源前缀（默认 `[{name}] `），并附加 `<category>` 标注来源
+- channel logo 由 `config.merge.logo` 指定（须为图片直链）；不配则不输出 `<image>`
+- 各源的命名空间声明（`media:` / `dc:` / `content:` 等）自动汇总，保证 XML 合法
 
 ## 架构
 
@@ -77,6 +88,14 @@ defaults:
 
 llm_prompt: |               # 可选，覆盖内置翻译 prompt
   ...
+
+merge:                      # 可选，/merge 合并 feed 配置
+  title: RSS 综合阅读
+  description: 各源翻译后的合并信息流
+  # link: https://example.com       # 默认取首个源的 channel link
+  logo: https://example.com/x.png   # 须为图片直链；不配则不输出 <image>
+  title_prefix: "[{name}] "         # item 标题前缀，{name}=源 title；设 "" 关闭
+  add_category: true                 # item 加 <category> 标注来源
 
 providers:
   ino2api:

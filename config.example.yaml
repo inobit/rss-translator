@@ -14,10 +14,10 @@ defaults:
 
 # /merge 合并 feed 的元信息与条目标注
 merge:
-  title: RSS Translator 综合
-  description: 整合各源翻译后的 RSS
-  link: https://example.com # 可选，默认取首个源的 channel link
-  logo: https://example.com/logo.png # 可选，不配则不输出 <image>
+  title: 示例聚合 # channel 标题，自定义
+  description: 多源新闻聚合，各源标题摘要翻译后合并
+  # link: https://example.com # 可选，默认取首个源的 channel link
+  logo: https://example.com/logo.png # 可选，图片直链（image/png 等）；不配则不输出 <image>
   title_prefix: "[{name}] " # item 标题前缀，{name} 替换为源 title；设 "" 关闭
   add_category: true # 是否给 item 加 <category> 标注来源
 
