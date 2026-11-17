@@ -1,4 +1,4 @@
-name: Release
+name: Release Box Server
 
 on:
   push:
@@ -41,14 +41,15 @@ jobs:
 
       - name: Create release package
         run: |
-          mkdir -p release/rss-translator
-          cp -r dist-box release/rss-translator/
-          cp Dockerfile docker-compose.yml .env.example release/rss-translator/
-          cat > release/rss-translator/README.txt << 'EOF'
-          RSS Translator ${GITHUB_REF_NAME} — instabox box 部署包
-          ======================================================
-          本包含 box 运行所需的预构建产物与编排文件，不需要源码，也不需要
-          在 box 内编译。Worker 部署请使用仓库源码（wrangler deploy 或 Git 集成）。
+          mkdir -p release/rss-box-server
+          cp -r dist-box release/rss-box-server/
+          cp Dockerfile docker-compose.yml .env.example release/rss-box-server/
+          cat > release/rss-box-server/README.txt << 'EOF'
+          RSS Translator ${GITHUB_REF_NAME} — box server 部署包
+          ====================================================
+          本包只含 box 运行所需的预构建产物与编排文件：不需要源码，也不需要在
+          box 内编译。Worker 由仓库源码通过 `wrangler deploy` 或 Git 集成部署，
+          不在本包内。
 
           目录结构：
             dist-box/box-server.js   自包含产物（vite SSR 打包，仅外置 node 内置模块）
@@ -56,16 +57,15 @@ jobs:
             docker-compose.yml       编排（env_file: .env）
             .env.example             环境变量模板
 
-          快速开始：
-          1. 创建 box：
+          部署步骤：
+          1. 创建 box（首次）：
                instabox create --name general --user inobit
 
-          2. 把本包放到 box 的部署目录（默认 /data/home/rss-translator）：
-               tar -czf - dist-box Dockerfile docker-compose.yml \
-                 | instabox exec general --stdin -- \
-                   'mkdir -p /data/home/rss-translator && tar -xzf - -C /data/home/rss-translator'
+          2. 把本包内容放到 box 的部署目录（默认 /data/home/rss-translator）：
+               tar -czf - . | instabox exec general --stdin -- \
+                 'mkdir -p /data/home/rss-translator && tar -xzf - -C /data/home/rss-translator'
 
-          3. 在该目录创建 .env（参考 .env.example）：
+          3. 创建 .env（参考 .env.example）：
                CLOUDFLARE_ACCOUNT_ID / CF_KV_API_TOKEN /
                CF_KV_CONFIG_ID / CF_KV_CACHE_ID /
                INSTABOX_TOKEN / INSTABOX_PORT=8788 / <PROVIDER>_API_KEY
@@ -82,15 +82,17 @@ jobs:
           查看日志：
                instabox exec general -- 'docker logs rss-instabox -f'
 
-          说明：CF_KV_API_TOKEN 需在 Cloudflare Dashboard 创建自定义 API Token，
-                权限为 Developer Platform → Workers KV Storage → Edit，
-                Account Resources 选账户（不要限定到某个 Worker，否则无 KV 权限）。
+          注意：
+          - CF_KV_API_TOKEN 需在 Cloudflare Dashboard 创建自定义 API Token，
+            权限 Developer Platform → Workers KV Storage → Edit，
+            Account Resources 选账户或具体 namespace（限定到某个 Worker 会没有 KV 权限）。
+          - 改了 .env 后要用 `docker compose up -d` 重建容器（`restart` 不会重读 env_file）。
           EOF
           cd release
-          tar -czf rss-translator-${GITHUB_REF_NAME}.tar.gz rss-translator
+          tar -czf rss-box-server-${GITHUB_REF_NAME}.tar.gz rss-box-server
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: release/rss-translator-*.tar.gz
+          files: release/rss-box-server-*.tar.gz
           generate_release_notes: true

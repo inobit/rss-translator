@@ -224,4 +224,35 @@ pnpm run lint
 
 ## 发版
 
-> Release 流程仍在适配新架构（原 workflow 面向 VPS 的 `dist/cron-vps.js`），暂未更新。
+打 tag 触发 GitHub Actions，构建 box server 产物并发布 Release：
+
+```bash
+# tag 版本必须与 package.json version 一致
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+workflow 流程：版本一致性校验 → `pnpm build:box` → 打包 → 创建 GitHub Release。
+
+**Release 内容 = box server 部署包**（Worker 由 `wrangler deploy` 从源码构建，不进 Release）：
+
+```
+rss-box-server-v0.2.0.tar.gz
+├── dist-box/box-server.js   # 自包含产物，vite SSR 打包，仅外置 node 内置模块
+├── Dockerfile               # 只 COPY dist-box，镜像内不编译
+├── docker-compose.yml       # 编排（env_file: .env）
+├── .env.example             # 环境变量模板
+└── README.txt               # box 部署步骤
+```
+
+box 从 Release 部署（无需源码，也无需在 box 内编译）：
+
+```bash
+# 本机下载并推到 box
+curl -LO https://github.com/inobit/rss-translator/releases/download/v0.2.0/rss-box-server-v0.2.0.tar.gz
+tar -czf - -C /tmp rss-box-server | instabox exec general --stdin -- \
+  'mkdir -p /data/home/rss-translator && tar -xzf - -C /data/home/rss-translator --strip-components=1'
+
+# 或者日常用 make（从当前仓库构建 + 推送）
+make deploy-box
+```
