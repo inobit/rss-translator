@@ -16,7 +16,7 @@ CF Worker（免费计划，纯读 + 极轻转发，不跑 cheerio/LLM）
   ├─ /rss → 纯读 KV 成品 XML → miss 转发 instabox 即时组装 + 后台补译
   ├─ /raw → 纯读 KV 成品 HTML → miss 转发 instabox 即时格式化 + 后台翻译
   ├─ /merge → 转发 box 组装各源成品（不拉取、不翻译），补全相对链接
-  └─ /scheduled 每 10min → POST INSTABOX_WAKE_URL?mode=full（纯触发器，不阻塞）
+  └─ /scheduled 每 3h → POST INSTABOX_WAKE_URL?mode=full（纯触发器，不阻塞）
         │
         ▼
 instabox box（Docker，Hono HTTP，唯一执行者：cheerio 解析 + LLM 翻译）
@@ -156,8 +156,8 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
     "target_lang": "ZH",
     "engines": ["ino2api"],
     "max_articles_per_run": 20,
-    "sources_per_run": 5,
-    "articles_per_source": 8,
+    "sources_per_run": 10,
+    "articles_per_source": 100,
     "rss_cache_ttl": 30,
     "article_cache_ttl": 30
   },
@@ -186,8 +186,8 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `merge.title_prefix` | item 标题前缀模板，`{name}` = 源 title，默认 `"[{name}] "`，设 `""` 关闭 |
 | `merge.add_category` | 是否给 item 加 `<category>` 标注来源，默认 `true` |
 | `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |
-| `defaults.sources_per_run` | instabox 每轮处理的源数量，默认 5 |
-| `defaults.articles_per_source` | instabox 每个源每轮处理的文章数量，默认 8 |
+| `defaults.sources_per_run` | instabox 每轮处理的源数量，默认 10 |
+| `defaults.articles_per_source` | instabox 每个源每轮处理的文章数量，默认 100 |
 | `defaults.engines` | 全局默认 provider 链，source 未指定时使用 |
 | `defaults.rss_cache_ttl` | RSS 标题/摘要缓存天数，默认 30 |
 | `defaults.article_cache_ttl` | 文章正文缓存天数，默认 30 |
@@ -196,9 +196,9 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 
 **当前方案：CF Worker cron（免费计划）纯触发 → instabox box 执行。**
 
-- `wrangler.toml [triggers] crons = ["*/10 * * * *"]`
+- `wrangler.toml [triggers] crons = ["0 */3 * * *"]`（每 3 小时）
 - Worker `scheduled` handler 用 `ctx.waitUntil(fetch(INSTABOX_WAKE_URL?mode=full, { headers: { 'X-Instabox-Token': SECRET } }))` 纯触发，不阻塞、不求响应
-- box 收到后后台执行 round-robin：每轮 `sources_per_run` 个源 × 每源 `articles_per_source` 篇，游标在 `RSS_CACHE`（`cache:rssout:cursor:global`），watchdog 60s 到点收尾
+- box 收到后后台执行 round-robin：每轮 `sources_per_run` 个源 × 每源 `articles_per_source` 篇，游标在 `RSS_CACHE`（`cache:rssout:cursor:global`），watchdog 默认 30 分钟（`BOX_WATCHDOG_MS` 可覆盖）到点收尾
 
 ### 流程
 1. Worker `/scheduled` 唤醒 box（`mode=full`）

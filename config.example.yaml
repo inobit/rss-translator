@@ -7,8 +7,8 @@ defaults:
   engines: # 默认翻译引擎链，按顺序尝试，失败自动流转
     - ino2api
   max_articles_per_run: 20 # 每次 cron 最多缓存文章数
-  sources_per_run: 5 # instabox 每轮处理的源数
-  articles_per_source: 8 # instabox 每源每轮处理的文章数
+  sources_per_run: 10 # instabox 每轮处理的源数
+  articles_per_source: 100 # instabox 每源每轮处理的文章数
   max_input_tokens: 8192 # 最大输入 token 数
   target_lang: ZH # 目标语言
 

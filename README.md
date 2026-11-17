@@ -36,7 +36,7 @@ GET /merge?token=<ACCESS_TOKEN>                          → 所有源合并后�
   │
 CF Worker（免费计划，纯读 + 轻量转发）
   │
-  └─ cron */10min → POST <INSTABOX_WAKE_URL>?mode=full（纯触发器，202 即返回）
+  └─ cron 0 */3 * * * → POST <INSTABOX_WAKE_URL>?mode=full（纯触发器，202 即返回）
         │
         ▼
 instabox box（Docker，唯一执行者：cheerio 解析 + LLM 翻译）
@@ -58,11 +58,11 @@ KV 只存「成品」：
 
 ## 定时任务
 
-CF Worker cron 每 10 分钟纯触发 box（`POST /run?mode=full`），box 立即返回 202 并在后台执行：
+CF Worker cron 每 3 小时纯触发 box（`POST /run?mode=full`），box 立即返回 202 并在后台执行：
 
-- round-robin 选源：每轮 `sources_per_run`（默认 5）个源 × 每源 `articles_per_source`（默认 8）篇
+- round-robin 选源：每轮 `sources_per_run`（默认 10）个源 × 每源 `articles_per_source`（默认 100）篇
 - 增量：已缓存（`getArticleCache` 命中）或已在处理（`tryMark*Pending`）直接跳过
-- watchdog 60s：到点停止拉取新内容，已完成的写入 KV
+- watchdog 30 分钟（`BOX_WATCHDOG_MS` 可覆盖）：到点停止拉取新内容，已完成的写入 KV
 - 游标仅在整轮跑完时推进；被 watchdog 中断则保留，下轮重新覆盖
 
 翻译失败（上游 5xx/超时）静默降级为原文，不阻塞后续。
@@ -89,8 +89,8 @@ make push-config      # 或 pnpm run push-config
 defaults:
   engines: [ino2api]        # provider 链，按顺序尝试，失败流转
   target_lang: ZH
-  sources_per_run: 5        # 每轮处理的源数
-  articles_per_source: 8    # 每源每轮文章数
+  sources_per_run: 10       # 每轮处理的源数
+  articles_per_source: 100  # 每源每轮文章数
   max_input_tokens: 8192    # LLM 单次请求最大输入 token，超过自动分批
   request_interval_ms: 300  # 批次间延迟
   rss_cache_ttl: 30         # 天

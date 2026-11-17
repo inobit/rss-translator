@@ -29,8 +29,15 @@ import {
 } from './box-core';
 
 
-/** box 后台任务最长执行时长（watchdog 截止，毫秒） */
-const WATCHDOG_MS = 60_000;
+/** box 后台任务默认最长执行时长（watchdog 截止，毫秒）；可用 BOX_WATCHDOG_MS 覆盖 */
+const DEFAULT_WATCHDOG_MS = 30 * 60_000;
+
+/** 解析 watchdog 时长（env.BOX_WATCHDOG_MS 优先） */
+function resolveWatchdogMs(env: WorkerEnv): number {
+  const raw = env.BOX_WATCHDOG_MS;
+  const v = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : NaN;
+  return Number.isFinite(v) && v > 0 ? v : DEFAULT_WATCHDOG_MS;
+}
 
 /** 从 Runner token（与 INSTABOX_TOKEN 从同一处读取）校验共享鉴权 */
 function buildAuthHeaderGuard(app: Hono<{ Bindings: WorkerEnv }>, token: string) {
@@ -52,6 +59,7 @@ export function createBoxServer(env: WorkerEnv) {
   const app = new Hono<{ Bindings: WorkerEnv }>();
   const logger = createLogger(env);
   const token = env.INSTABOX_TOKEN ?? '';
+  const watchdogMs = resolveWatchdogMs(env);
 
   app.get('/health', (c) => {
     return c.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -61,7 +69,7 @@ export function createBoxServer(env: WorkerEnv) {
 
   app.post('/run', async (c) => {
     const mode = (c.req.query('mode') as 'full' | 'meta' | 'articles') ?? 'full';
-    const deadline = Date.now() + WATCHDOG_MS;
+    const deadline = Date.now() + watchdogMs;
     // 202 立即返回，后台执行
     const task = (async () => {
       const config = await getConfig(env);
@@ -77,7 +85,7 @@ export function createBoxServer(env: WorkerEnv) {
       }
     })();
     void task;
-    return c.json({ status: 'accepted', mode, watchdog_ms: WATCHDOG_MS }, 202);
+    return c.json({ status: 'accepted', mode, watchdog_ms: watchdogMs }, 202);
   });
 
   app.get('/forward/meta', async (c) => {

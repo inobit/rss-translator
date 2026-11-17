@@ -126,6 +126,8 @@ export interface WorkerEnv {
   INSTABOX_WAKE_URL?: string;
   /** instabox box 基础 URL（secret，npx wrangler secret put INSTABOX_BOX_URL，转发用） */
   INSTABOX_BOX_URL?: string;
+  /** box 后台任务 watchdog 时长（毫秒）；默认 30 分钟，box .env 可覆盖 */
+  BOX_WATCHDOG_MS?: string;
   [key: string]: unknown;
 }
 
