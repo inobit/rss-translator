@@ -340,8 +340,19 @@ export async function getOrBuildArticleHtml(
   // claim 成功：渲染（若 render 失败借助 PENDING_TTL 60s 自动失效，循环有兜底）
   const { html } = await fetchAndRenderPage(url, env, sourceId);
 
-  // 后台翻译写成品（复用已持有的 claim，避免二次 claim）
-  translateAndCacheArticle(env, source, url, config, { skipClaim: true }).catch(() => {});
+  // 后台写成品：translate_body !== false 才翻译正文；false 直接用已渲染结果写缓存
+  if (source.translate_body !== false) {
+    translateAndCacheArticle(env, source, url, config, { skipClaim: true }).catch(() => {});
+  } else {
+    setArticleCache(
+      env,
+      source.id,
+      url,
+      targetLang,
+      html,
+      daysToSec(config.defaults?.article_cache_ttl),
+    ).catch(() => {});
+  }
 
   return html;
 }
