@@ -29,7 +29,7 @@ instabox box（Docker，Hono HTTP，唯一执行者：cheerio 解析 + LLM 翻�
 - **解析 / 翻译执行者**: instabox box（Docker，Node 24 + Hono，唯一跑 cheerio + LLM 的一方）
 - **XML 解析**: fast-xml-parser v4（属性前缀 `@_`，CDATA 通过 `__cdata` 属性标记）
 - **HTML 解析**: cheerio v1（CSS 选择器 + JSON-LD 结构化数据）
-- **翻译**: DeepSeek API（OpenAI 兼容格式）
+- **翻译**: 任意 OpenAI 兼容 chat completions API（当前 `ino2api` → `https://ai.ztjt.ltd/v1`）
 - **存储**: Cloudflare KV ×2（`RSS_CONFIG` + `RSS_CACHE`），Worker 只读，box 通过 REST API 写
 - **语言**: TypeScript strict mode
 
@@ -37,11 +37,16 @@ instabox box（Docker，Hono HTTP，唯一执行者：cheerio 解析 + LLM 翻�
 
 ```bash
 pnpm run dev          # wrangler dev 本地开发
-pnpm run deploy       # wrangler deploy 部署
+pnpm run deploy       # wrangler deploy 部署 Worker（Git 集成亦可自动部署）
 pnpm run type-check   # tsc --noEmit 类型检查
-npx wrangler tail     # 查看生产日志
-pnpm run box-server   # 本地跑 instabox box（需 .env）
-pnpm run build:box    # 编译 box（产物 dist-box/box-server.js）
+pnpm run lint         # eslint src
+pnpm run build:box    # 编译 box（产物 dist-box/box-server.js，自包含单文件）
+pnpm run box-server   # 本地跑 box（需 .env）
+pnpm run push-config  # 推送 config.yaml 到 RSS_CONFIG KV
+
+# 部署 box（构建 + 推送 dist-box/Dockerfile/docker-compose.yml + 重启）
+make deploy-box
+make logs / make health / make restart
 ```
 
 ## 架构
@@ -73,10 +78,10 @@ src/
     └── logger.ts      # 日志
 ---
 box-server.ts          # box server 入口（Node，Node 24 直接跑 TS / vite 打包）
-Dockerfile             # box 镜像（构建 dist-box，运行 box-server.js）
+Dockerfile             # box 镜像（只 COPY 预构建的 dist-box，镜像内不编译）
 docker-compose.yml     # box 编排（挂载 .env）
 vite.config.box.ts      # box 打包配置
-vite.config.cron.ts     # cron-vps 打包配置（保留，兼容 VPS 旧部署）
+vite.config.cron.ts     # 旧 VPS cron 打包配置（遗留，可删）
 ```
 
 > 在线 `/rss` `/raw` 仍可用：Worker 纯读成品 + 转发 box。`refresh.ts` / `cron-vps.ts` / `systemd` 保留但为旧 VPS 方案的遗留，不建议再部署。
@@ -128,9 +133,10 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
     "engines": ["deepseek", "cfllm"]
   }],
   "providers": {
-    "deepseek": {
-      "endpoint": "https://api.deepseek.com/v1/chat/completions",
-      "model": "deepseek-v4-flash"
+    "ino2api": {
+      "endpoint": "https://ai.ztjt.ltd/v1/chat/completions",
+      "model": "rss",
+      "max_input_tokens": 32768
     },
     "deeplx": {
       "type": "deeplx",
@@ -144,7 +150,7 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
   },
   "defaults": {
     "target_lang": "ZH",
-    "engines": ["deepseek"],
+    "engines": ["ino2api"],
     "max_articles_per_run": 20,
     "sources_per_run": 5,
     "articles_per_source": 8,
@@ -218,36 +224,38 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 
 ## 翻译引擎
 
-- 使用 DeepSeek `deepseek-v4-flash`，OpenAI 兼容 API
+- 走 OpenAI 兼容 chat completions（当前 provider `ino2api`，endpoint `https://ai.ztjt.ltd/v1/chat/completions`，model `rss`）
 - 单文本翻译时不编号，直接返回
-- 批量翻译时用 `[1] [2] ...` 格式拼接成一次 API 调用
-- 每段文本独立进 KV 缓存（`RSS_CACHE`），跨文章复用
-- 翻译失败静默返回原文
+- 批量翻译时用 `[1] [2] ...` 格式拼接成一次 API 调用；超过 `max_input_tokens` 自动分批
+- 元信息翻译结果写入 box 内部记忆表 `cache:rss:<v3>:<sourceId>:<LANG>`（worker 不读）
+- 翻译失败（5xx/超时）静默降级为原文，不阻塞后续
+- 非流式（`stream` 未启用），等完整 JSON 返回
 
 ## 配置
 
-- 非敏感配置在 `wrangler.toml` `[vars]` 中（含 `INSTABOX_WAKE_URL` / `INSTABOX_BOX_URL`）
-- 密钥通过 `npx wrangler secret put` 设置（`ACCESS_TOKEN`、各 provider `{NAME}_API_KEY`、`INSTABOX_TOKEN`）
-- box 运行用 `.env` 文件（含 CF KV + provider key + `INSTABOX_TOKEN`，box 用 docker compose `env_file: .env` 挂载），不要提交真实值
+- Worker 非敏感配置在 `wrangler.toml` `[vars]`（仅 `LOG_LEVEL`）；`INSTABOX_WAKE_URL` / `INSTABOX_BOX_URL` **由 Dashboard 管理**，不写入 wrangler.toml（避免部署覆盖）
+- 密钥通过 `npx wrangler secret put` 或 Dashboard 设置（`ACCESS_TOKEN`、`INSTABOX_TOKEN`、各 provider `{NAME}_API_KEY`）
+- box 运行用 `.env` 文件（CF KV + provider key + `INSTABOX_TOKEN`，docker compose `env_file: .env` 挂载），不要提交真实值
 - 多 provider 共享 key：配置 `api_key_name` 指向同一个 secret 名
 
 ## 部署步骤（Worker + box）
 
 ### Worker
-1. 创建 KV namespace：
+1. 创建 KV namespace（首次）：
    ```bash
    npx wrangler kv namespace create RSS_CACHE
    ```
 2. 填入 `wrangler.toml` 的 `[[kv_namespaces]]`
-3. 设置 secrets：`ACCESS_TOKEN`、每个 provider 的 `{NAME}_API_KEY`、`INSTABOX_TOKEN`
-4. `wrangler.toml [vars]` 填 `INSTABOX_WAKE_URL` / `INSTABOX_BOX_URL`（指向 box）
-5. 部署：`pnpm run deploy`
+3. 设置 secrets：`ACCESS_TOKEN`、`INSTABOX_TOKEN`、provider 的 `{NAME}_API_KEY`
+4. Dashboard 设置 vars：`INSTABOX_WAKE_URL`（`https://<box-url>/run`）、`INSTABOX_BOX_URL`（`https://<box-url>`）
+5. 部署：push 到 `feature/instabox` 由 Git 集成自动部署，或 `pnpm run deploy`
 
-### instabox box（Docker）
-1. Clone 仓库 + 安装依赖
-2. 创建 `.env`（含 `CLOUDFLARE_ACCOUNT_ID` / `CF_KV_API_TOKEN` / `CF_KV_CONFIG_ID` / `CF_KV_CACHE_ID` / 各 provider key / `INSTABOX_TOKEN`）
-3. 启动：`docker compose up -d --build`
-4. 验证：`curl http://localhost:8788/health`
-5. 日志：`docker logs -f rss-instabox`
+### instabox box（Docker，只跑预构建产物）
+1. 创建 box：`instabox create --name general --user inobit`
+2. 在 box 的 `BOX_DIR`（默认 `/data/home/rss-translator`）放 `.env`
+3. 本地 `make deploy-box`：构建 `dist-box/` → tar 流推送 `dist-box Dockerfile docker-compose.yml` → `docker compose up -d --build`
+4. 暴露端口：`instabox port publish general 8788`
+5. 验证：`make health`；日志：`make logs`
 
-> box 所需 env 变量清单及说明见 `docs/instabox.md`；实际值放 `.env`（不提交），`.env.example` 仅作模板参考。
+> box 镜像只 `COPY dist-box`，不在镜像内编译，重建秒级。
+> box 所需 env 变量清单见 `docs/instabox.md`；实际值放 `.env`（不提交）。

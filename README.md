@@ -1,200 +1,202 @@
 # RSS Translator
 
-Cloudflare Worker 上的 RSS 翻译代理，支持多 LLM provider 翻译。免费计划兼容：VPS 定时预缓存翻译，Worker 纯读缓存。
+Cloudflare Worker 上的 RSS 翻译代理：Worker 纯读 KV 成品，instabox box（Docker）负责解析与 LLM 翻译。
+
+兼容 Cloudflare 免费计划（10ms CPU）：Worker 不做 cheerio/LLM，重活全部交给 box。
 
 ## 使用
 
 ```
-GET /rss?source=bbc-world&token=<TOKEN>      → 翻译后的 RSS XML
-GET /raw?url=...&source=...&token=<TOKEN>    → 翻译后的文章 HTML
+GET /rss?source=bbc-world&token=<ACCESS_TOKEN>          → 翻译后的 RSS XML
+GET /raw?url=...&source=bbc-world&token=<ACCESS_TOKEN>  → 翻译后的文章 HTML
 ```
 
-将 `/rss` 链接导入任意 RSS 阅读器即可。
+把 `/rss` 链接导入任意 RSS 阅读器即可。`token` 即 Worker 的 `ACCESS_TOKEN` secret。
 
-## 定时缓存
+## 架构
 
-> **注意**：定时任务已从 Cloudflare Cron Triggers 迁移至 VPS（systemd timer），
-> 免费计划 CPU 10ms 限制下 cron 无法完成翻译。升级到 Workers Paid 后可恢复使用 CF cron。
+```
+用户 RSS 阅读器
+  │
+  ├─ GET /rss  → 读 KV 成品 XML（命中即返回，相对链接补 origin/token）
+  │              miss → 转发 box 即时组装（未翻译）+ 后台补译
+  ├─ GET /raw  → 读 KV 成品 HTML（命中即返回）
+  │              miss → 转发 box 即时格式化 + 后台翻译
+  │
+CF Worker（免费计划，纯读 + 轻量转发）
+  │
+  └─ cron */10min → POST <INSTABOX_WAKE_URL>?mode=full（纯触发器，202 即返回）
+        │
+        ▼
+instabox box（Docker，唯一执行者：cheerio 解析 + LLM 翻译）
+  ├─ POST /run?mode=full|meta|articles   定时任务，round-robin
+  ├─ GET  /forward/meta?source=          单源 RSS 即时组装
+  ├─ GET  /forward/article?url=&source=  单篇正文即时格式化
+  ├─ GET  /merge                         合并各源成品（只读组装）
+  └─ 通过 CF REST API 直写 KV
+```
 
-通过 VPS systemd timer 定时预翻译，写入 CF KV：
+KV 只存「成品」：
 
-| Timer                     | 频率      | 任务                       |
-|---------------------------|-----------|----------------------------|
-| `rss-cron-articles.timer` | 每 10 分钟 | 预缓存文章正文（translate_body 为 true 的 source） |
-| `rss-cron-meta.timer`     | 每 10 分钟 | 预缓存 RSS 标题和摘要（translate 为 true 的 source） |
+| key | 内容 |
+|-----|------|
+| `cache:rssout:<LANG>:<sourceId>` | 整份组装好的 RSS XML |
+| `cache:article:v1:<sourceId>:<hash>:<LANG>` | 渲染好的文章 HTML |
+| `cache:rss:<v3>:<sourceId>:<LANG>` | box 内部翻译记忆（worker 不读） |
+| `cache:rssout:cursor:global` | round-robin 游标 |
 
-每轮最多处理 `max_articles_per_run` 篇文章（默认 10），跨 source 共用限额。
+## 定时任务
 
-Worker 端只读 KV 缓存，缓存命中直接返回翻译版，未命中返回原文（下次 cron 补齐）。CPU < 5ms。
+CF Worker cron 每 10 分钟纯触发 box（`POST /run?mode=full`），box 立即返回 202 并在后台执行：
 
-## 支持的 Source
+- round-robin 选源：每轮 `sources_per_run`（默认 5）个源 × 每源 `articles_per_source`（默认 8）篇
+- 增量：已缓存（`getArticleCache` 命中）或已在处理（`tryMark*Pending`）直接跳过
+- watchdog 60s：到点停止拉取新内容，已完成的写入 KV
+- 游标仅在整轮跑完时推进；被 watchdog 中断则保留，下轮重新覆盖
 
-| source            | 说明                           | RSS Feed URL                                                  |
-|-------------------|--------------------------------|---------------------------------------------------------------|
-| `bbc-world`       | BBC 国际新闻                   | `https://feeds.bbci.co.uk/news/world/rss.xml`                 |
-| `bbc-business`    | BBC 商业新闻                   | `https://feeds.bbci.co.uk/news/business/rss.xml`              |
-| `bbc`             | BBC（通用）                    | `https://feeds.bbci.co.uk/news/rss.xml`                       |
-| `sciam`           | Scientific American            | `http://rss.sciam.com/ScientificAmerican-Global`              |
-| `guardian-ai`     | The Guardian（AI）             | `https://www.theguardian.com/technology/artificialintelligenceai/rss` |
-| `guardian-china`  | The Guardian（中国）           | `https://www.theguardian.com/world/china/rss`                 |
-| `mit-news`        | MIT News                       | `https://news.mit.edu/rss/feed`                               |
-| `theregister-ai`  | The Register（AI/ML）          | `https://www.theregister.com/software/ai_ml/headlines.atom`   |
-| `tds`             | Towards Data Science           | `https://towardsdatascience.com/feed/`                        |
-| `simonw`          | Simon Willison's Blog          | `https://simonwillison.net/atom/everything/`                  |
-
-未注册的 source 使用通用提取器降级处理。
+翻译失败（上游 5xx/超时）静默降级为原文，不阻塞后续。
 
 ## 配置
 
-编辑 `config.yaml`，然后推送 KV：
+编辑 `config.yaml` 后推送 KV：
 
 ```bash
-pnpm run push-config
+make push-config      # 或 pnpm run push-config
 ```
 
 ```yaml
-# config.yaml
 defaults:
-  engines:               # 默认翻译引擎链，按顺序尝试，失败自动流转
-    - deepseek
-  max_articles_per_run: 20
-  max_input_tokens: 8192
+  engines: [ino2api]        # provider 链，按顺序尝试，失败流转
   target_lang: ZH
-  rss_cache_ttl: 30       # RSS 缓存天数，默认 30
-  article_cache_ttl: 30   # 文章缓存天数，默认 30
+  sources_per_run: 5        # 每轮处理的源数
+  articles_per_source: 8    # 每源每轮文章数
+  max_input_tokens: 8192    # LLM 单次请求最大输入 token，超过自动分批
+  request_interval_ms: 300  # 批次间延迟
+  rss_cache_ttl: 30         # 天
+  article_cache_ttl: 30     # 天
+
+llm_prompt: |               # 可选，覆盖内置翻译 prompt
+  ...
 
 providers:
-  deepseek:              # LLM provider（需设置 DEEPSEEK_API_KEY secret）
-    endpoint: https://api.deepseek.com/v1/chat/completions
-    model: deepseek-v4-flash
-    max_input_tokens: 1000000
-
-  # deeplx:              # DeepLX（需设置 DEEPLX_API_KEY secret）
-  #   type: deeplx
-  #   endpoint: https://api.deeplx.org
-  #
-  # cfllm:               # Cloudflare Workers AI LLM，OpenAI 兼容（需设置 CLOUDFLARE_API_KEY secret）
-  #   endpoint: https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/v1/chat/completions
-  #   model: "@cf/zai-org/glm-4.7-flash"
-  #   api_key_name: CLOUDFLARE_API_KEY
+  ino2api:
+    endpoint: https://ai.ztjt.ltd/v1/chat/completions
+    model: rss
+    max_input_tokens: 32768
 
 sources:
   - id: bbc-world
     name: BBC World
     url: https://feeds.bbci.co.uk/news/world/rss.xml
     title: BBC 国际新闻
-    domains:
-      - bbc.co.uk
-      - bbc.com
-    translate: true
-    translate_body: true
-    # engines: [deepseek]  # 可选，覆盖 defaults.engines
+    domains: [bbc.co.uk, bbc.com]   # 文章域名白名单
+    translate: true                 # 翻译标题/摘要
+    translate_body: true            # 翻译正文并改写 link 为代理 URL
 ```
 
 | 字段 | 说明 |
 |------|------|
 | `sources[].translate` | 翻译 RSS 标题/摘要 |
-| `sources[].translate_body` | 翻译正文并将 `<link>` 改写为代理 URL |
+| `sources[].translate_body` | 翻译正文并将 `<link>` 改写为 `/raw` 代理 URL |
 | `sources[].domains` | 文章域名白名单，为空不限制 |
-| `sources[].engines` | 翻译 provider 名称数组，覆盖 defaults |
+| `sources[].engines` | 覆盖 `defaults.engines` |
 | `providers.{name}.type` | `"llm"`（默认）/ `"deeplx"` / `"cloudflare"` |
-| `providers.{name}.api_key_name` | 显式指定 secret 名，默认 `{NAME}_API_KEY` |
+| `providers.{name}.api_key_name` | 指定 secret 名，默认 `{NAME}_API_KEY` |
 
 ## 部署
 
-### 使用 Makefile
+### Worker
 
-项目提供 Makefile 封装常用部署操作：
+已配置 Cloudflare Git 集成（分支 `feature/instabox`），push 即自动构建部署（`npx wrangler deploy`）。
+也可本地手动部署：
 
-| 目标 | 说明 |
+```bash
+make deploy-worker     # pnpm run deploy
+```
+
+**Secrets**（Dashboard 或 `npx wrangler secret put`）：
+
+| 名称 | 用途 |
 |------|------|
-| `make build` | 打包 cron 为 `dist/cron-vps.js` |
-| `make push-config` | 推送 `config.yaml` 到 Cloudflare KV |
-| `make deploy-cf` | 推送配置 + 部署 Worker 到 Cloudflare |
-| `make deploy-vps` | 构建 + 推送配置 + 复制到 VPS + 安装定时任务 |
-| `make deploy` | `git push` + `deploy-vps` |
-| `make clean` | 清理构建产物 |
-| `make help` | 显示帮助 |
+| `ACCESS_TOKEN` | 客户端访问 `/rss` `/raw` 的 token |
+| `INSTABOX_TOKEN` | Worker → box 的共享鉴权 token（与 box `.env` 同值） |
 
-必需变量 `RSS_VPS`（VPS 地址或 `user@host`），可选变量 `DIR`（VPS 目录，默认 `/opt/rss-translator`）：
+**Vars**（Dashboard 管理，不写入 `wrangler.toml` 以免部署覆盖）：
+
+```
+INSTABOX_WAKE_URL = https://<box-public-url>/run
+INSTABOX_BOX_URL  = https://<box-public-url>
+```
+
+### instabox box
+
+box 只运行预构建产物，不需要源码。
 
 ```bash
-make deploy-vps RSS_VPS=my-vps
-make deploy RSS_VPS=admin@10.0.0.1
+# 1. 创建 box（首次）
+instabox create --name general --user inobit
+
+# 2. 准备 .env（放到 box 的 BOX_DIR，参考 .env.example）
+#    含 CF KV 凭据 + provider key + INSTABOX_TOKEN
+
+# 3. 构建并部署（本地构建 → 推送 dist-box/Dockerfile/docker-compose.yml → 重启）
+make deploy-box
+
+# 4. 暴露端口拿公网 URL
+instabox port publish general 8788
 ```
 
-### 手动部署（首次）
+`make deploy-box` 做的事：
+1. `pnpm run build:box` → `dist-box/box-server.js`（vite SSR 自包含单文件）
+2. 打包 `dist-box Dockerfile docker-compose.yml` 用 tar 流推送到 box 的 `BOX_DIR`
+3. `docker compose up -d --build`（镜像只 COPY 产物，秒级重建）
+
+日常运维：
 
 ```bash
-# 首次
-npx wrangler kv namespace create RSS_CONFIG
-npx wrangler kv namespace create RSS_CACHE
-# 填写 wrangler.toml 中的 KV namespace id
-npx wrangler secret put ACCESS_TOKEN
-npx wrangler secret put DEEPSEEK_API_KEY
-pnpm run push-config
-pnpm run deploy
-
-# 后续
-pnpm run deploy
+make logs       # docker logs -f
+make health     # curl /health
+make restart    # 仅重启容器
 ```
 
-### VPS 定时任务
+### box 环境变量
+
+见 `.env.example`（模板）与 `docs/instabox.md`。实际值放 box 的 `.env`，**不要提交**。
+
+关键项：
+```
+CLOUDFLARE_ACCOUNT_ID / CF_KV_API_TOKEN / CF_KV_CONFIG_ID / CF_KV_CACHE_ID
+INSTABOX_TOKEN / INSTABOX_PORT=8788
+INO2API_API_KEY
+```
+
+`CF_KV_API_TOKEN` 需在 Cloudflare Dashboard 创建自定义 API Token：
+**Developer Platform → Workers KV Storage → Edit**，Account Resources 选账户（不要限定到某个 Worker，否则无 KV 权限）。
+
+## 本地开发
 
 ```bash
-git clone <repo> /opt/rss-translator
-cd /opt/rss-translator
-pnpm install --prod
-
-# 创建 .env（参考 .env.example），填写 CF_API_TOKEN + provider key
-cp .env.example .env
-vim .env
-
-# 安装 systemd timer（软链接，repo 更新 daemon-reload 后自动生效）
-sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.service /etc/systemd/system/
-sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.timer /etc/systemd/system/
-sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.service /etc/systemd/system/
-sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now rss-cron-articles.timer rss-cron-meta.timer
-
-# 查看日志
-sudo journalctl -u rss-cron-articles.service -f
+pnpm install
+pnpm run dev            # wrangler dev（Worker）
+pnpm run box-server     # 本地跑 box（需 .env）
+pnpm run type-check
+pnpm run lint
 ```
 
-## 发版（Release）
+## 支持的 Source
 
-打 tag 触发 GitHub Actions 自动构建并发布：
+| source | 说明 | RSS |
+|---|---|---|
+| `bbc-world` | BBC 国际新闻 | `https://feeds.bbci.co.uk/news/world/rss.xml` |
+| `guardian-ai` | 卫报 AI | `https://www.theguardian.com/technology/artificialintelligenceai/rss` |
+| `guardian-china` | 卫报 中国 | `https://www.theguardian.com/world/china/rss` |
+| `theregister-ai` | The Register AI/ML | `https://www.theregister.com/software/ai_ml/headlines.atom` |
+| `tds` | Towards Data Science | `https://towardsdatascience.com/feed/` |
+| `simonw` | Simon Willison's Blog | `https://simonwillison.net/atom/everything/` |
+| `news-cn` | 新华社（中文，不翻译） | `https://plink.anyfeeder.com/newscn/whxw` |
 
-```bash
-git tag v0.1.0      # tag 版本必须与 package.json version 一致
-git push --tags
-```
+未注册的 source 使用通用提取器降级处理。
 
-workflow 自动完成：版本一致性校验 → `pnpm build` 打包 cron → 生成 `rss-translator-<tag>.tar.gz` → 创建 GitHub Release（release notes 按 Conventional Commits 自动分组）。
+## 发版
 
-**Release 内容 = VPS 部署包**（Worker 由 `wrangler deploy` 从源码构建，不包含在 Release 中）：
-
-```
-rss-translator-<tag>.tar.gz
-├── dist/cron-vps.js        # 自包含单文件，node 直接运行
-├── systemd/                # 4 个 .service + .timer
-├── .env.example
-└── README.txt              # VPS 部署步骤
-```
-
-VPS 从 Release 部署（无需 `git clone` + `pnpm install`）：
-
-```bash
-curl -LO https://github.com/inobit/rss-translator/releases/download/v0.1.0/rss-translator-v0.1.0.tar.gz
-sudo mkdir -p /opt/rss-translator && sudo chown $USER /opt/rss-translator
-tar -xzf rss-translator-v0.1.0.tar.gz -C /opt/rss-translator --strip-components=1
-cd /opt/rss-translator
-cp .env.example .env && vim .env
-# 按 README.txt 安装 systemd 定时任务
-```
-
-## 恢复 CF Cron（付费计划）
-
-升级到 Workers Paid 后，在 `wrangler.toml` 中取消注释 `[triggers]` 段，
-在 `src/worker.ts` 中取消注释 `scheduled` handler，即可恢复使用 CF Cron Triggers。
+> Release 流程仍在适配新架构（原 workflow 面向 VPS 的 `dist/cron-vps.js`），暂未更新。
