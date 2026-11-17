@@ -4,6 +4,7 @@ import type { WorkerEnv } from './types';
 import { authMiddleware } from './middleware/auth';
 import { registerRssRoute } from './routes/rss';
 import { registerRawRoute } from './routes/raw';
+import { registerMergeRoute } from './routes/merge';
 // import { registerRefreshRoute } from './routes/refresh';        // 见下方注释
 
 const app = new Hono<{ Bindings: WorkerEnv }>();
@@ -19,10 +20,12 @@ app.get('/health', (c) => {
 // 需要鉴权的端点
 app.use('/rss', authMiddleware);
 app.use('/raw', authMiddleware);
+app.use('/merge', authMiddleware);
 app.use('/refresh', authMiddleware);
 
 registerRssRoute(app);
 registerRawRoute(app);
+registerMergeRoute(app);
 // ================================================================
 // [VPS 迁移后回退旧版] 若需人工刷新，取消下面注释：
 //   registerRefreshRoute(app);

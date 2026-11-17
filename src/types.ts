@@ -65,10 +65,31 @@ export interface RssSource {
 }
 
 /** KV 中存储的全局配置 */
+/** 合并 feed（/merge）的元信息与条目标注配置 */
+export interface MergeConfig {
+  /** channel 标题，默认 "RSS Translator 综合" */
+  title?: string;
+  /** channel 描述，默认 "整合各源翻译后的 RSS" */
+  description?: string;
+  /** channel link，默认取首个源链接或空 */
+  link?: string;
+  /** channel logo 图片 URL（RSS <image>），不设则不输出 image */
+  logo?: string;
+  /**
+   * item 标题前缀模板，`{name}` 替换为源的 title（无则 name）。
+   * 默认 "[{name}] "；设为空字符串可关闭前缀。
+   */
+  title_prefix?: string;
+  /** 是否给 item 添加 <category> 标注来源，默认 true */
+  add_category?: boolean;
+}
+
 export interface RssConfig {
   sources: RssSource[];
   /** 多 provider 配置，key 为 provider 名称 */
   providers?: Record<string, TranslateProvider>;
+  /** /merge 合并 feed 配置 */
+  merge?: MergeConfig;
   defaults: {
     target_lang: string;
     /** @deprecated 使用 engines 替代 */

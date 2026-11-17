@@ -385,27 +385,75 @@ export async function buildMergedRss(
   config: RssConfig,
 ): Promise<string | null> {
   const logger = createLogger(env);
-  const channelMeta: Record<string, unknown> = {
-    title: 'RSS Translator 综合',
-    description: '整合各源翻译后的 RSS',
-    link: 'https://rss-translator.local',
-    language: 'ZH-CN',
-  };
-  const allItems: Record<string, unknown>[] = [];
+  const mergeCfg = config.merge ?? {};
+  const targetLang = config.defaults?.target_lang ?? 'ZH';
+  const titlePrefix = mergeCfg.title_prefix ?? '[{name}] ';
+  const addCategory = mergeCfg.add_category ?? true;
+
+  const allItems: { item: Record<string, unknown>; pubDate: number }[] = [];
+  let firstLink = '';
 
   for (const source of config.sources) {
     if (!sourceEnabled(source)) continue;
-    const targetLang = config.defaults?.target_lang ?? 'ZH';
     const out = await getRssOutCache(env, source.id, targetLang);
     if (!out) continue;
     const parsed = parseRssXml(out);
     if (!parsed) continue;
-    for (const item of parsed.channel.items) {
-      allItems.push(item as unknown as Record<string, unknown>);
+    if (!firstLink && typeof parsed.channel.link === 'string') {
+      firstLink = parsed.channel.link;
+    }
+
+    const sourceLabel = source.title || source.name || source.id;
+    for (const raw of parsed.channel.items) {
+      const item = { ...(raw as unknown as Record<string, unknown>) };
+
+      // 标题前缀：让合并流里能一眼区分来源
+      if (titlePrefix && typeof item.title === 'string') {
+        item.title = titlePrefix.replace(/\{name\}/g, sourceLabel) + item.title;
+      }
+
+      // <category> 标准元素标注来源（与原 category 共存）
+      if (addCategory) {
+        const existing = item.category;
+        if (Array.isArray(existing)) {
+          item.category = [...existing, sourceLabel];
+        } else if (typeof existing === 'string') {
+          item.category = [existing, sourceLabel];
+        } else {
+          item.category = sourceLabel;
+        }
+      }
+
+      allItems.push({ item, pubDate: parsePubDate(item.pubDate) });
     }
     logger.debug(`[merge] included ${source.id}: ${parsed.channel.items.length} items`);
   }
 
   if (allItems.length === 0) return null;
-  return buildRssXml(channelMeta, allItems, { '@_version': '2.0' });
+
+  // 按发布时间倒序（无 pubDate 的排到最后）
+  allItems.sort((a, b) => b.pubDate - a.pubDate);
+
+  const channelMeta: Record<string, unknown> = {
+    title: mergeCfg.title ?? 'RSS Translator 综合',
+    description: mergeCfg.description ?? '整合各源翻译后的 RSS',
+    link: mergeCfg.link ?? firstLink,
+    language: 'zh-CN',
+  };
+  if (mergeCfg.logo) {
+    channelMeta.image = {
+      url: mergeCfg.logo,
+      title: mergeCfg.title ?? 'RSS Translator 综合',
+      link: mergeCfg.link ?? firstLink,
+    };
+  }
+
+  return buildRssXml(channelMeta, allItems.map((x) => x.item), { '@_version': '2.0' });
+}
+
+/** 解析 RSS pubDate 为时间戳，失败返回 0（排序靠后） */
+function parsePubDate(value: unknown): number {
+  if (typeof value !== 'string') return 0;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? 0 : ts;
 }

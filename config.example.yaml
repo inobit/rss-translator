@@ -5,14 +5,29 @@
 
 defaults:
   engines: # 默认翻译引擎链，按顺序尝试，失败自动流转
-    - deepseek
+    - ino2api
   max_articles_per_run: 20 # 每次 cron 最多缓存文章数
   sources_per_run: 5 # instabox 每轮处理的源数
   articles_per_source: 8 # instabox 每源每轮处理的文章数
   max_input_tokens: 8192 # 最大输入 token 数
   target_lang: ZH # 目标语言
 
+# /merge 合并 feed 的元信息与条目标注
+merge:
+  title: RSS Translator 综合
+  description: 整合各源翻译后的 RSS
+  link: https://example.com # 可选，默认取首个源的 channel link
+  logo: https://example.com/logo.png # 可选，不配则不输出 <image>
+  title_prefix: "[{name}] " # item 标题前缀，{name} 替换为源 title；设 "" 关闭
+  add_category: true # 是否给 item 加 <category> 标注来源
+
 providers:
+  # OpenAI 兼容 LLM（需设置 INO2API_API_KEY secret / box .env）
+  ino2api:
+    endpoint: https://ai.ztjt.ltd/v1/chat/completions
+    model: rss
+    max_input_tokens: 32768
+
   # DeepLX （需设置 DEEPLX_API_KEY secret）
   # deeplx:
   #   type: deeplx

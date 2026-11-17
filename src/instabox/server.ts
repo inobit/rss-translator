@@ -118,7 +118,8 @@ export function createBoxServer(env: WorkerEnv) {
     const config = await getConfig(env);
     if (!config) return c.json({ error: 'No config' }, 500);
     const xml = await buildMergedRss(env, config);
-    if (!xml) return c.json({ error: 'No merged RSS available' }, 502);
+    // 无任何源成品时返回 404（语义：暂无内容），worker 侧转 503
+    if (!xml) return c.json({ error: 'No merged RSS available' }, 404);
     return new Response(xml, {
       headers: { 'Content-Type': 'application/rss+xml; charset=utf-8' },
     });

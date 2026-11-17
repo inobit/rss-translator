@@ -2,6 +2,7 @@ import type { Hono } from 'hono';
 import type { WorkerEnv } from '../types';
 import { getRssOutCache, getConfig } from '../storage/kv';
 import { makeBoxBytes } from '../instabox/box-http';
+import { rewriteRelativeLinks } from './link-rewrite';
 
 /**
  * GET /rss — 纯读 KV 成品 XML；miss 转发到 instabox box 即时组装并后台补译。
@@ -51,9 +52,7 @@ export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
     //    成品里链接是 CDATA 包住的相对路径 /raw?url=<enc>&source=<id>（不含 token/domain）
     if (!noRewrite) {
       const origin = new URL(c.req.url).origin;
-      const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
-      // URL-safe 字符捕获相对路径（不含 ]>" 等分隔符），避免吞掉 CDATA 结尾
-      xml = xml.replace(/(\/raw\?url=[\w%&=.-]+)/g, (_m, rel) => `${origin}${rel}${tokenParam}`);
+      xml = rewriteRelativeLinks(xml, origin, token);
     }
 
     return new Response(xml, {

@@ -5,7 +5,7 @@
 
 /** 通过相对路径 + query（不含 token / origin）构造 box 转发 URL */
 export function buildForwardUrl(boxUrl: string, path: string, query: string): string {
-  return `${boxUrl}${path}?${query}`;
+  return query ? `${boxUrl}${path}?${query}` : `${boxUrl}${path}`;
 }
 
 /**
