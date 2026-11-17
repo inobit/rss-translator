@@ -67,6 +67,16 @@ CF Worker cron 每 10 分钟纯触发 box（`POST /run?mode=full`），box 立�
 
 翻译失败（上游 5xx/超时）静默降级为原文，不阻塞后续。
 
+源开关语义：
+
+| 字段 | 含义 |
+|------|------|
+| `enabled: false` | 完全跳过 |
+| `translate: false` | 不翻译标题/摘要，成品仍定时刷新 |
+| `translate_body: false` | 不翻译正文，只格式化缓存原文 |
+
+成品写入前会比较内容，未变则跳过 —— KV 免费计划只有 1000 写入/天，全量重写会打满配额。
+
 ## 配置
 
 编辑 `config.yaml` 后推送 KV：

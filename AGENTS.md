@@ -202,10 +202,23 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 
 ### 流程
 1. Worker `/scheduled` 唤醒 box（`mode=full`）
-2. box 从 KV 读配置，round-robin 选源
-3. 拉取 RSS，解析文章，逐篇 `tryMarkArticlePending` 去重（转发与定时同时触达同一 url 时保底）
-4. 未缓存 → 抓取原文 → cheerio 提取 → LLM 翻译 → 渲染 HTML → 写 KV 成品
-5. 标题/摘要翻译后组装整份成品 RSS XML 写 `cache:rssout:<id>`
+2. box 从 KV 读配置
+3. **元信息**：遍历所有 `enabled !== false` 的源（`translate=false` 只刷新成品、不调 LLM）；标题/摘要增量翻译后组装整份 RSS XML，**内容未变则不写 KV**
+4. **文章**：round-robin 选 `sources_per_run` 个源 × 每源 `articles_per_source` 篇；`translate_body !== false` 走翻译，`false` 只格式化原文；逐篇 `tryMarkArticlePending` 去重（转发与定时同时触达同一 url 时保底）
+5. 未缓存 → 抓取原文 → cheerio 提取 →（按需 LLM 翻译）→ 渲染 HTML → 写 KV 成品
+
+### 开关语义
+
+| 字段 | 含义 |
+|------|------|
+| `enabled: false` | 完全跳过（不刷新、不抓取）|
+| `translate: false` | 不翻译元信息，**但成品仍定时刷新** |
+| `translate_body: false` | 不翻译正文，**只格式化并缓存原文 HTML** |
+
+### KV 写入纪律
+
+KV 免费计划仅 1000 写入/天。成品写入前先比较内容，未变则跳过（`writeIfChanged`）；
+元信息记忆表也只在有新翻译条目时写。全量无脑重写会直接打满配额。
 
 > 旧 VPS 方案（`cron-vps.ts` + `systemd/`）保留，但不建议继续部署；`refresh.ts` 同理。
 
