@@ -126,14 +126,16 @@ export async function translateAndCacheRssOut(
   if (!parsed) return 0;
 
   const items = parsed.channel.items;
-  const memory = (await getRssMeta(env, source.id, targetLang)) ?? {};
 
-  // translate=false：不翻译，只组装成品
+  // translate=false：不翻译，只组装成品并对比（无需读记忆表）
   if (!source.translate) {
     const outXml = assembleRssOut(source, parsed, null);
     await writeIfChanged(env, source.id, targetLang, outXml, config);
     return 0;
   }
+
+  // 只有需要翻译时才读翻译记忆表
+  const memory = (await getRssMeta(env, source.id, targetLang)) ?? {};
 
   // 收集未缓存条目
   const uncached: MetaTextData[] = [];
