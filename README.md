@@ -137,15 +137,21 @@ make deploy-worker     # pnpm run deploy
 
 | 名称 | 用途 |
 |------|------|
-| `ACCESS_TOKEN` | 客户端访问 `/rss` `/raw` 的 token |
+| `ACCESS_TOKEN` | 客户端访问 `/rss` `/raw` `/merge` 的 token |
 | `INSTABOX_TOKEN` | Worker → box 的共享鉴权 token（与 box `.env` 同值） |
+| `INSTABOX_WAKE_URL` | box 唤醒地址 `https://<box-url>/run` |
+| `INSTABOX_BOX_URL` | box 基础地址 `https://<box-url>`（转发用）|
 
-**Vars**（必须写在 `wrangler.toml` 的 `[vars]`：`wrangler deploy` 会用 `[vars]` 完整替换 Worker 变量，Dashboard 手动加的普通变量会被清掉）：
+全部用 secret 存放（不放 `wrangler.toml`，避免进仓库，也不会被 `wrangler deploy` 的 `[vars]` 同步覆盖）：
 
+```bash
+npx wrangler secret put ACCESS_TOKEN
+npx wrangler secret put INSTABOX_TOKEN
+npx wrangler secret put INSTABOX_WAKE_URL   # https://<box-url>/run
+npx wrangler secret put INSTABOX_BOX_URL    # https://<box-url>
 ```
-INSTABOX_WAKE_URL = https://<box-public-url>/run
-INSTABOX_BOX_URL  = https://<box-public-url>
-```
+
+> 换成 var 的话，`wrangler deploy` 会用 `[vars]` 完整替换 Worker 变量，Dashboard 手动加的普通变量会被清掉；secret 不受影响。
 
 ### instabox box
 

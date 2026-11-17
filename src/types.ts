@@ -122,9 +122,9 @@ export interface WorkerEnv {
   LOG_LEVEL?: string;
   /** instabox 共享鉴权 token（secret，npx wrangler secret put INSTABOX_TOKEN 设置） */
   INSTABOX_TOKEN?: string;
-  /** instabox box 唤醒 URL（var，如 https://<box-url>/run） */
+  /** instabox box 唤醒 URL（secret，npx wrangler secret put INSTABOX_WAKE_URL，值如 https://<box>/run） */
   INSTABOX_WAKE_URL?: string;
-  /** instabox box 基础 URL（var，转发用，如 https://<box-url>） */
+  /** instabox box 基础 URL（secret，npx wrangler secret put INSTABOX_BOX_URL，转发用） */
   INSTABOX_BOX_URL?: string;
   [key: string]: unknown;
 }

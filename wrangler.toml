@@ -11,12 +11,12 @@ crons = ["*/10 * * * *"]
 
 [vars]
 LOG_LEVEL = "info"
-# instabox box 地址（转发 + 唤醒）。必须写在这里：wrangler deploy 会以 [vars] 完整替换
-# Worker 的普通变量，Dashboard 手动加的 plain var 会在下次部署时被清掉。
-INSTABOX_WAKE_URL = "<BOX_URL>/run"
-INSTABOX_BOX_URL = "<BOX_URL>"
-# 注：INSTABOX_TOKEN 是 secret（Dashboard 设置或 npx wrangler secret put INSTABOX_TOKEN），
-# secret 不会被部署覆盖。
+# INSTABOX_WAKE_URL / INSTABOX_BOX_URL 用 secret 存放（不在 wrangler.toml 里，避免进仓库；
+# 且 secret 不会被 wrangler deploy 的 [vars] 同步覆盖）：
+#   npx wrangler secret put INSTABOX_WAKE_URL   # 值：https://<box-url>/run
+#   npx wrangler secret put INSTABOX_BOX_URL    # 值：https://<box-url>
+# 注：它们只是 URL 不是凭证，但 box 公网地址不想公开，放 secret 亦可。
+# 注意：不要同时把它写在 [vars] 里，否则部署会以 var 形式重新覆盖 secret。
 
 [[kv_namespaces]]
 binding = "RSS_CONFIG"
