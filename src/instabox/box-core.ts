@@ -170,7 +170,15 @@ export async function translateAndCacheRssOut(
 }
 
 /**
- * 只在成品内容变化（或尚无缓存）时写 KV。
+ * 比较用的归一化：剔除易变的 lastBuildDate。
+ * 源站可能周期刷新该时间戳，不剔除的话「内容未变也会判定为变化」，KV 写入优化失效。
+ */
+function normalizeForCompare(xml: string): string {
+  return xml.replace(/<lastBuildDate>[^<]*<\/lastBuildDate>/g, '<lastBuildDate/>');
+}
+
+/**
+ * 只在成品实质内容变化（或尚无缓存）时写 KV。
  * 避免每轮无脑重写全部源——KV 免费计划仅 1000 写入/天，全量重写会直接打满。
  */
 async function writeIfChanged(
@@ -182,7 +190,7 @@ async function writeIfChanged(
 ): Promise<void> {
   const logger = createLogger(env);
   const existing = await getRssOutCache(env, sourceId, targetLang);
-  if (existing === outXml) {
+  if (existing !== null && normalizeForCompare(existing) === normalizeForCompare(outXml)) {
     logger.debug(`RSS output unchanged, skip write: ${sourceId}`);
     return;
   }
