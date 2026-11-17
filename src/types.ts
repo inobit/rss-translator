@@ -126,6 +126,8 @@ export interface WorkerEnv {
   INSTABOX_BOX_URL?: string;
   /** box 后台任务 watchdog 时长（毫秒）；默认 30 分钟，box .env 可覆盖 */
   BOX_WATCHDOG_MS?: string;
+  /** 文章翻译并发度；默认 5，box .env 可覆盖 */
+  BOX_ARTICLE_CONCURRENCY?: string;
   [key: string]: unknown;
 }
 

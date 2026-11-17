@@ -42,6 +42,34 @@ import { createLogger } from '../utils/logger';
 const DEFAULT_TTL_DAYS = 30;
 const DEFAULT_SOURCES_PER_RUN = 5;
 const DEFAULT_ARTICLES_PER_SOURCE = 8;
+const DEFAULT_ARTICLE_CONCURRENCY = 5;
+
+/** 解析文章翻译并发度（env.BOX_ARTICLE_CONCURRENCY 优先，默认 5） */
+function resolveConcurrency(env: WorkerEnv): number {
+  const raw = env.BOX_ARTICLE_CONCURRENCY;
+  const v = typeof raw === 'string' ? Number(raw) : typeof raw === 'number' ? raw : NaN;
+  return Number.isFinite(v) && v >= 1 ? Math.floor(v) : DEFAULT_ARTICLE_CONCURRENCY;
+}
+
+/**
+ * 简单并发池：同时最多跑 limit 个任务，全部完成才返回。
+ * Promise.all 会等待所有 runner，任一任务抛错会中断整体（调用方各自 try/catch）。
+ */
+async function runPool<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(Math.max(1, limit), items.length) }, async () => {
+    for (;;) {
+      const idx = next++;
+      if (idx >= items.length) return;
+      await worker(items[idx]);
+    }
+  });
+  await Promise.all(runners);
+}
 
 /**
  * 严格 percent-encode：在 encodeURIComponent 基础上，把其保留的 `! ~ * ' ( )` 也转义成 %XX。
@@ -425,28 +453,36 @@ export async function runScheduled(
     }
 
     let interrupted = false; // 是否因 deadline 提前中断（未跑完本窗口）
+    const concurrency = resolveConcurrency(env);
     for (const source of windowSources) {
       if (Date.now() > opts.deadline) { interrupted = true; break; }
       const parsed = await fetchRssParsed(source.url);
       if (!parsed) continue;
       // translate_body=false：只格式化正文，不调 LLM
       const needTranslateBody = source.translate_body !== false;
-      let picked = 0;
+
+      // 先串行挑出本源的待处理条目（已缓存 / 超限额则跳过）
+      const targets: string[] = [];
       for (const item of parsed.channel.items) {
-        if (Date.now() > opts.deadline) { interrupted = true; break; }
-        if (picked >= articlesPerSource) break;
+        if (targets.length >= articlesPerSource) break;
         if (!item.link) continue;
         const cached = await getArticleCache(env, source.id, item.link, targetLang);
         if (cached) continue;
-        // claim 权威只在 translateAndCacheArticle / formatAndCacheArticle 内部发生一次（此处不 claim）
+        targets.push(item.link);
+      }
+
+      // 并发处理（并发度可配，默认 5）。watchdog 到点仅停止发起新任务，
+      // 已在飞行的请求会自然跑完——避免将半成品丢给下一轮重复抓取。
+      await runPool(targets, concurrency, async (link) => {
+        if (Date.now() > opts.deadline) { interrupted = true; return; }
+        // claim 权威在 translateAndCacheArticle / formatAndCacheArticle 内部发生一次
         if (needTranslateBody) {
-          await translateAndCacheArticle(env, source, item.link, config);
+          await translateAndCacheArticle(env, source, link, config);
         } else {
-          await formatAndCacheArticle(env, source, item.link, config);
+          await formatAndCacheArticle(env, source, link, config);
         }
         processed++;
-        picked++;
-      }
+      });
     }
 
     // 仅在完整跑完本窗口时才推进游标，避免 deadline 提前中断丢源；
