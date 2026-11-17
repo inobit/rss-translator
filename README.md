@@ -140,7 +140,7 @@ make deploy-worker     # pnpm run deploy
 | `ACCESS_TOKEN` | 客户端访问 `/rss` `/raw` 的 token |
 | `INSTABOX_TOKEN` | Worker → box 的共享鉴权 token（与 box `.env` 同值） |
 
-**Vars**（Dashboard 管理，不写入 `wrangler.toml` 以免部署覆盖）：
+**Vars**（必须写在 `wrangler.toml` 的 `[vars]`：`wrangler deploy` 会用 `[vars]` 完整替换 Worker 变量，Dashboard 手动加的普通变量会被清掉）：
 
 ```
 INSTABOX_WAKE_URL = https://<box-public-url>/run

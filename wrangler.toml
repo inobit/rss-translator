@@ -11,11 +11,12 @@ crons = ["*/10 * * * *"]
 
 [vars]
 LOG_LEVEL = "info"
-# INSTABOX_WAKE_URL / INSTABOX_BOX_URL 由 Cloudflare Dashboard 管理（不写入 wrangler.toml，
-# 避免每次部署覆盖 Dashboard 上设置的值）。
-#   INSTABOX_WAKE_URL = https://<box-public-url>/run
-#   INSTABOX_BOX_URL  = https://<box-public-url>
-# 注：INSTABOX_TOKEN 是 secret（Dashboard 设置或 npx wrangler secret put INSTABOX_TOKEN）
+# instabox box 地址（转发 + 唤醒）。必须写在这里：wrangler deploy 会以 [vars] 完整替换
+# Worker 的普通变量，Dashboard 手动加的 plain var 会在下次部署时被清掉。
+INSTABOX_WAKE_URL = "<BOX_URL>/run"
+INSTABOX_BOX_URL = "<BOX_URL>"
+# 注：INSTABOX_TOKEN 是 secret（Dashboard 设置或 npx wrangler secret put INSTABOX_TOKEN），
+# secret 不会被部署覆盖。
 
 [[kv_namespaces]]
 binding = "RSS_CONFIG"

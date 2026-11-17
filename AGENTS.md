@@ -247,7 +247,7 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
 
 ## 配置
 
-- Worker 非敏感配置在 `wrangler.toml` `[vars]`（仅 `LOG_LEVEL`）；`INSTABOX_WAKE_URL` / `INSTABOX_BOX_URL` **由 Dashboard 管理**，不写入 wrangler.toml（避免部署覆盖）
+- Worker 非敏感配置（`LOG_LEVEL`、`INSTABOX_WAKE_URL`、`INSTABOX_BOX_URL`）**必须写在 `wrangler.toml` `[vars]`**：`wrangler deploy` 会用 `[vars]` 完整替换 Worker 变量，Dashboard 手动加的普通 var 会在下次部署时被清掉（secret 不受影响）
 - 密钥通过 `npx wrangler secret put` 或 Dashboard 设置（`ACCESS_TOKEN`、`INSTABOX_TOKEN`、各 provider `{NAME}_API_KEY`）
 - box 运行用 `.env` 文件（CF KV + provider key + `INSTABOX_TOKEN`，docker compose `env_file: .env` 挂载），不要提交真实值
 - `/merge` 的 channel logo 由 `config.merge.logo` 指定（图片直链）；未配则不输出 `<image>`
