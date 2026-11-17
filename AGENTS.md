@@ -155,7 +155,6 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
   "defaults": {
     "target_lang": "ZH",
     "engines": ["ino2api"],
-    "max_articles_per_run": 20,
     "sources_per_run": 10,
     "articles_per_source": 100,
     "rss_cache_ttl": 30,
@@ -185,7 +184,6 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `merge.logo` | /merge 的 channel 图片，须为图片直链；不配则不输出 `<image>` |
 | `merge.title_prefix` | item 标题前缀模板，`{name}` = 源 title，默认 `"[{name}] "`，设 `""` 关闭 |
 | `merge.add_category` | 是否给 item 加 `<category>` 标注来源，默认 `true` |
-| `defaults.max_articles_per_run` | 每次 cron 最多缓存的文章数，默认 10，跨所有 source 合计 |
 | `defaults.sources_per_run` | instabox 每轮处理的源数量，默认 10 |
 | `defaults.articles_per_source` | instabox 每个源每轮处理的文章数量，默认 100 |
 | `defaults.engines` | 全局默认 provider 链，source 未指定时使用 |

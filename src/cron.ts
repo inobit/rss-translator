@@ -57,8 +57,8 @@ export async function preCacheArticles(env: WorkerEnv): Promise<void> {
   }
 
   const targetLang = config.defaults?.target_lang ?? "ZH";
-  const maxArticles =
-    config.defaults?.max_articles_per_run ?? DEFAULT_MAX_ARTICLES;
+  // 遗留 VPS 逻辑：额度改为固定常量（新架构由 box 的 sources_per_run × articles_per_source 控制）
+  const maxArticles = DEFAULT_MAX_ARTICLES;
   const requestIntervalMs = config.defaults?.request_interval_ms ?? 0;
   const articleCacheTtl = daysToSeconds(
     config.defaults?.article_cache_ttl ?? DEFAULT_CACHE_TTL_DAYS,

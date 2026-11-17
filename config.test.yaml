@@ -9,7 +9,6 @@ defaults:
     - nvidia
     - cfllm
     - deepseek
-  max_articles_per_run: 10
   max_input_tokens: 8192
   request_interval_ms: 1000
   target_lang: ZH

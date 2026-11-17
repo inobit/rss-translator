@@ -100,8 +100,6 @@ export interface RssConfig {
     rss_cache_ttl?: number;
     /** 文章缓存天数，默认 30 */
     article_cache_ttl?: number;
-    /** 每次 cron 运行最多预缓存的文章数，默认 10 */
-    max_articles_per_run?: number;
     /** instabox 定时任务每轮处理的源数量，默认 5 */
     sources_per_run?: number;
     /** instabox 定时任务每个源每轮处理的文章数量，默认 8 */
