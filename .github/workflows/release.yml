@@ -36,39 +36,55 @@ jobs:
           fi
           echo "✅ Version consistency check passed: v$TAG_VERSION"
 
-      - name: Build
-        run: pnpm build
+      - name: Build box bundle
+        run: pnpm build:box
 
       - name: Create release package
         run: |
           mkdir -p release/rss-translator
-          cp -r dist release/rss-translator/
-          cp -r systemd release/rss-translator/
-          cp .env.example release/rss-translator/
+          cp -r dist-box release/rss-translator/
+          cp Dockerfile docker-compose.yml .env.example release/rss-translator/
           cat > release/rss-translator/README.txt << 'EOF'
-          RSS Translator ${GITHUB_REF_NAME} — VPS 定时任务部署包
+          RSS Translator ${GITHUB_REF_NAME} — instabox box 部署包
           ======================================================
-          本包仅包含 VPS 端定时翻译任务所需文件，Worker 部署请直接
-          使用仓库源码执行 `pnpm run deploy`。
+          本包含 box 运行所需的预构建产物与编排文件，不需要源码，也不需要
+          在 box 内编译。Worker 部署请使用仓库源码（wrangler deploy 或 Git 集成）。
+
+          目录结构：
+            dist-box/box-server.js   自包含产物（vite SSR 打包，仅外置 node 内置模块）
+            Dockerfile               镜像只 COPY dist-box
+            docker-compose.yml       编排（env_file: .env）
+            .env.example             环境变量模板
 
           快速开始：
-          1. 解压本包到目标目录（如 /opt/rss-translator）
-          2. cp .env.example .env 并填写配置
-             （CF_KV_API_TOKEN / CF_KV_CONFIG_ID / CF_KV_CACHE_ID /
-               provider API key 等，参考仓库 .env.example 注释）
-          3. 安装 systemd 定时任务：
-             sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.service /etc/systemd/system/
-             sudo ln -sf /opt/rss-translator/systemd/rss-cron-articles.timer /etc/systemd/system/
-             sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.service /etc/systemd/system/
-             sudo ln -sf /opt/rss-translator/systemd/rss-cron-meta.timer /etc/systemd/system/
-             sudo systemctl daemon-reload
-             sudo systemctl enable --now rss-cron-articles.timer rss-cron-meta.timer
-          4. 手动测试：
-             node dist/cron-vps.js articles
-             node dist/cron-vps.js metadata
+          1. 创建 box：
+               instabox create --name general --user inobit
+
+          2. 把本包放到 box 的部署目录（默认 /data/home/rss-translator）：
+               tar -czf - dist-box Dockerfile docker-compose.yml \
+                 | instabox exec general --stdin -- \
+                   'mkdir -p /data/home/rss-translator && tar -xzf - -C /data/home/rss-translator'
+
+          3. 在该目录创建 .env（参考 .env.example）：
+               CLOUDFLARE_ACCOUNT_ID / CF_KV_API_TOKEN /
+               CF_KV_CONFIG_ID / CF_KV_CACHE_ID /
+               INSTABOX_TOKEN / INSTABOX_PORT=8788 / <PROVIDER>_API_KEY
+
+          4. 启动：
+               instabox exec general -- 'cd /data/home/rss-translator && docker compose up -d --build'
+
+          5. 暴露端口并取得公网地址：
+               instabox port publish general 8788
+
+          6. 验证：
+               instabox exec general -- 'curl -s http://127.0.0.1:8788/health'
 
           查看日志：
-             sudo journalctl -u rss-cron-articles.service -f
+               instabox exec general -- 'docker logs rss-instabox -f'
+
+          说明：CF_KV_API_TOKEN 需在 Cloudflare Dashboard 创建自定义 API Token，
+                权限为 Developer Platform → Workers KV Storage → Edit，
+                Account Resources 选账户（不要限定到某个 Worker，否则无 KV 权限）。
           EOF
           cd release
           tar -czf rss-translator-${GITHUB_REF_NAME}.tar.gz rss-translator
