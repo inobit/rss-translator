@@ -1,133 +1,62 @@
 import type { Hono } from 'hono';
-import type { WorkerEnv, RssSource } from '../types';
-import { parseRssXml, buildRssXml, getChannelMetadata } from '../services/rss';
-import { getConfig, getRssMeta, urlHash } from '../storage/kv';
-import { createLogger } from '../utils/logger';
+import type { WorkerEnv } from '../types';
+import { getRssOutCache, getConfig } from '../storage/kv';
+import { makeBoxBytes } from '../instabox/box-http';
 
+/**
+ * GET /rss — 纯读 KV 成品 XML；miss 转发到 instabox box 即时组装并后台补译。
+ *
+ * 成品 RSS XML 中文章 <link> 用的是相对路径 `/raw?url=<enc>&source=<id>`（不含 token/domain）。
+ * 命中缓存时 worker 用当前请求的 origin 补绝对地址、用当前请求 token 补 &token=，
+ * 保持 worker 纯读 + 极轻字符串替换（不放 fetch/cheerio/LLM 进 worker）。
+ */
 export function registerRssRoute(app: Hono<{ Bindings: WorkerEnv }>) {
   app.get('/rss', async (c) => {
-    const logger = createLogger(c.env);
     const sourceId = c.req.query('source');
-    const dynamicUrl = c.req.query('url');
     const noRewrite = c.req.query('links') === 'original';
 
-    if (!sourceId && !dynamicUrl) {
-      return c.json({ error: 'Missing "source" or "url" parameter' }, 400);
+    if (!sourceId) {
+      return c.json({ error: 'Missing "source" parameter' }, 400);
     }
 
-    // 获取配置
-    const config = await getConfig(c.env);
-    let source: RssSource | null = null;
-
-    if (sourceId) {
-      if (!config) {
-        return c.json({ error: 'No config found in KV' }, 500);
-      }
-      source = config.sources.find((s) => s.id === sourceId) ?? null;
-      if (!source) {
-        return c.json({ error: `Source "${sourceId}" not found` }, 404);
-      }
-    } else {
-      // 动态 URL 模式
-      source = {
-        id: '__dynamic__',
-        name: 'Dynamic Feed',
-        url: dynamicUrl!,
-        title: c.req.query('title'),
-        translate: config?.defaults?.engine || config?.defaults?.engines ? true : false,
-        translate_body: false,
-        engines: config?.defaults?.engines ?? (config?.defaults?.engine ? [config.defaults.engine] : ['deeplx']),
-      };
-    }
-
-    const targetLang = config?.defaults?.target_lang ?? 'ZH';
-    const cacheKey = sourceId || '__dynamic__';
-
-    // 抓取原始 RSS
-    logger.info(`Fetching RSS: ${source.url}`);
-    const resp = await fetch(source.url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-    });
-    if (!resp.ok) {
-      logger.error(`Failed to fetch RSS: ${resp.status}`);
-      return c.json({ error: `Failed to fetch RSS: ${resp.status}` }, 502);
-    }
-
-    const xml = await resp.text();
-
-    const parsed = parseRssXml(xml);
-    if (!parsed) {
-      return c.json({ error: 'Failed to parse RSS XML' }, 500);
-    }
-
-    const { channel } = parsed;
-    const channelMeta = getChannelMetadata(channel);
-
-    if (source.title) {
-      channelMeta.title = source.title;
-    }
-
-    if (source.logo) {
-      const imageTitle = source.title || (channelMeta.title as string) || source.name;
-      const imageLink = (channelMeta.link as string) || source.url;
-      // 保留现有字段后，将 logo 相关元素放在最前面
-      const existingMeta = { ...channelMeta };
-      for (const key of Object.keys(channelMeta)) {
-        delete channelMeta[key];
-      }
-      channelMeta['webfeeds:icon'] = source.logo;
-      channelMeta.image = {
-        url: source.logo,
-        title: imageTitle,
-        link: imageLink,
-      };
-      delete existingMeta['webfeeds:icon'];
-      delete existingMeta.image;
-      Object.assign(channelMeta, existingMeta);
-      // 注册 webfeeds 命名空间
-      if (parsed.rssAttrs) {
-        parsed.rssAttrs['@_xmlns:webfeeds'] = 'http://webfeeds.org/rss/1.0';
-      }
-    }
-
-    // 翻译：从 per-source 聚合缓存取，未命中保留原文（VPS cron 负责写入缓存）
-    if (source.translate && channel.items.length > 0) {
-      const metaCache = await getRssMeta(c.env, cacheKey, targetLang);
-      if (metaCache) {
-        for (let i = 0; i < channel.items.length; i++) {
-          const item = channel.items[i];
-          if (!item.link) continue;
-          const cached = metaCache[urlHash(item.link)];
-          if (cached) {
-            if (cached.title) item.title = cached.title;
-            if (item.description && cached.description) {
-              item.description = cached.description;
-            }
-          }
-        }
-      }
-    }
-
-    // 替换正文链接为代理 URL
     const token = c.req.query('token') ?? '';
-    const itemsOutput = channel.items.map((item) => {
-      const output: Record<string, unknown> = {
-        ...item,
-      };
+    const boxUrl = c.env.INSTABOX_BOX_URL;
+    const boxToken = c.env.INSTABOX_TOKEN ?? '';
 
-      if (!noRewrite && sourceId && item.link) {
-        const encodedUrl = encodeURIComponent(item.link);
-        const sourceParam = `&source=${encodeURIComponent(sourceId)}`;
-        const baseUrl = new URL(c.req.url).origin;
-        output.link = `${baseUrl}/raw?url=${encodedUrl}${sourceParam}&token=${encodeURIComponent(token)}`;
+    // targetLang 与 box 写成品 RSS 的 key 一致：轻量读 config（不跑 cheerio/LLM）
+    const config = await getConfig(c.env);
+    const targetLang = config?.defaults?.target_lang ?? 'ZH';
+
+    // 1) 命中成品直接返回
+    let xml = await getRssOutCache(c.env, sourceId, targetLang);
+
+    // 2) miss：转发到 box 即时组装（未翻译），box 后台补翻译写成品
+    if (xml === null) {
+      if (!boxUrl) {
+        return c.json({ error: 'Cache miss and box not configured' }, 502);
       }
+      const fwd = await makeBoxBytes(boxUrl, {
+        path: '/forward/meta',
+        query: `source=${encodeURIComponent(sourceId)}${noRewrite ? '' : `&token=${encodeURIComponent(token)}`}`,
+        token: boxToken,
+      });
+      if (!fwd.boxOk) {
+        // box 无法返回：按原样报错（用户接受）
+        return c.json({ error: `Forward to box failed: ${fwd.status}` }, fwd.status >= 400 && fwd.status < 600 ? fwd.status : 502);
+      }
+      xml = fwd.body;
+    }
 
-      return output;
-    });
+    // 3) 用当前请求 origin 补绝对地址、用当前 token 补 &token=，保持轻量字符串替换
+    //    成品里链接是 CDATA 包住的相对路径 /raw?url=<enc>&source=<id>（不含 token/domain）
+    if (!noRewrite) {
+      const origin = new URL(c.req.url).origin;
+      const tokenParam = token ? `&token=${encodeURIComponent(token)}` : '';
+      // URL-safe 字符捕获相对路径（不含 ]>" 等分隔符），避免吞掉 CDATA 结尾
+      xml = xml.replace(/(\/raw\?url=[\w%&=.-]+)/g, (_m, rel) => `${origin}${rel}${tokenParam}`);
+    }
 
-    const rssXml = buildRssXml(channelMeta as Record<string, unknown>, itemsOutput, parsed.rssAttrs);
-
-    return new Response(rssXml, {
+    return new Response(xml, {
       headers: {
         'Content-Type': 'application/rss+xml; charset=utf-8',
         'Cache-Control': 'public, max-age=300',

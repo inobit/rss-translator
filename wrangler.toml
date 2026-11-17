@@ -3,18 +3,20 @@ main = "src/worker.ts"
 compatibility_date = "2024-04-01"
 
 # ================================================================
-# [付费计划后恢复] Cron 定时任务已迁移至 VPS（systemd timer）。
-#   升级到 Workers Paid (Unbound) 后可取消下面注释恢复：
-#   [triggers]
-#   # "*/10 * * * *"    — 每 10 分钟：预缓存文章正文
-#   # "*/10 * * * *"    — 每 10 分钟：预缓存 RSS 元信息
-#   crons = ["*/10 * * * *", "0 */1 * * *"]
+# [instabox] 定时任务由 CF Worker cron 触发 instabox box 执行。
+#   Box 是唯一解析/翻译执行者；Worker 的 scheduled 只触发唤醒请求。
 # ================================================================
-# [triggers]
-# crons = ["*/10 * * * *", "0 */1 * * *"]
+[triggers]
+crons = ["*/10 * * * *"]
 
 [vars]
 LOG_LEVEL = "info"
+# instabox box 基础 URL（转发 + 唤醒），需按实际部署填写
+INSTABOX_WAKE_URL = "<BOX_URL>/run"
+INSTABOX_BOX_URL = "<BOX_URL>"
+
+# 注：INSTABOX_TOKEN 是 secret（勿放 vars），用下命令设置：
+#   npx wrangler secret put INSTABOX_TOKEN
 
 [[kv_namespaces]]
 binding = "RSS_CONFIG"

@@ -8,6 +8,7 @@ const ARTICLE_CACHE_PREFIX = 'cache:article:';
 const ARTICLE_CACHE_VERSION = 'v1';
 const DEFAULT_ARTICLE_CACHE_TTL = 30 * 24 * 60 * 60; // 30 天
 
+const RSS_OUT_PREFIX = 'cache:rssout:'; // 成品 RSS XML 缓存前缀
 const RSS_META_PREFIX = 'cache:rss:';
 const RSS_META_VERSION = 'v3';
 const DEFAULT_RSS_META_CACHE_TTL = 30 * 24 * 60 * 60; // 30 天
@@ -61,6 +62,42 @@ export async function getRssMeta(
 }
 
 /** 写入某个 source 的翻译元数据缓存 */
+/** 获取某个 source 的成品 RSS XML 缓存 */
+export function rssOutCacheKey(sourceId: string, targetLang: string): string {
+  // 与 article key 一致，targetLang 纳入 key，避免不同目标语言互相覆盖成品 RSS
+  return `${RSS_OUT_PREFIX}${targetLang}:${sourceId}`;
+}
+
+/** 写入某个 source 的成品 RSS XML 缓存（已组装好、文章 link 用相对路径） */
+export async function setRssOutCache(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+  xml: string,
+  expirationTtl?: number,
+): Promise<void> {
+  const key = rssOutCacheKey(sourceId, targetLang);
+  await env.RSS_CACHE.put(key, xml, {
+    expirationTtl: expirationTtl ?? DEFAULT_RSS_META_CACHE_TTL,
+  });
+  logger.debug('RSS output cache set', { key });
+}
+
+export async function getRssOutCache(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+): Promise<string | null> {
+  const key = rssOutCacheKey(sourceId, targetLang);
+  try {
+    const raw = await env.RSS_CACHE.get(key);
+    if (!raw) return null;
+    return raw as string;
+  } catch {
+    return null;
+  }
+}
+
 export async function setRssMeta(
   env: WorkerEnv,
   sourceId: string,

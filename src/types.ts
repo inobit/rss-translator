@@ -81,6 +81,10 @@ export interface RssConfig {
     article_cache_ttl?: number;
     /** 每次 cron 运行最多预缓存的文章数，默认 10 */
     max_articles_per_run?: number;
+    /** instabox 定时任务每轮处理的源数量，默认 5 */
+    sources_per_run?: number;
+    /** instabox 定时任务每个源每轮处理的文章数量，默认 8 */
+    articles_per_source?: number;
     /** 全局默认 LLM 单次请求最大输入 token 数（provider 级优先，默认 8192） */
     max_input_tokens?: number;
     /** cron 任务中 LLM API 调用间的最小间隔（毫秒），仅 cron 生效，在线请求不延迟 */
@@ -95,6 +99,12 @@ export interface WorkerEnv {
   RSS_CACHE: KVNamespace;
   ACCESS_TOKEN: string;
   LOG_LEVEL?: string;
+  /** instabox 共享鉴权 token（secret，npx wrangler secret put INSTABOX_TOKEN 设置） */
+  INSTABOX_TOKEN?: string;
+  /** instabox box 唤醒 URL（var，如 https://<box-url>/run） */
+  INSTABOX_WAKE_URL?: string;
+  /** instabox box 基础 URL（var，转发用，如 https://<box-url>） */
+  INSTABOX_BOX_URL?: string;
   [key: string]: unknown;
 }
 

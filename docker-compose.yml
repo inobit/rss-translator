@@ -1,0 +1,17 @@
+# instabox box 编排
+# 运行：docker compose up -d
+# .env 需包含 CF KV 与 provider key（参考 .env.example）
+
+services:
+  box:
+    build: .
+    container_name: rss-instabox
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    env_file:
+      - .env
+    environment:
+      INSTABOX_PORT: "8788"
+    # box 侧只读写 KV，无需额外卷
+    command: ["node", "/app/dist-box/box-server.js"]
