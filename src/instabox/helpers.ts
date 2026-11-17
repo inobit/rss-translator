@@ -116,22 +116,31 @@ export async function translateMetaTexts(
 }
 
 /** 把翻译结果写回 per-source meta 缓存，并返回更新后的映射（用于 merge 记忆） */
+/**
+ * 把翻译结果写回 per-source meta 缓存，并返回更新后的映射。
+ *
+ * entries 是「未缓存条目」的 (link, 翻译) 配对——必须用未缓存条目的原索引取 link，
+ * 不能直接按数组位置对应全部 items，否则翻译会写到错误的 urlHash 上。
+ * 只有实际新增翻译时才写 KV（避免无谓写消耗 KV 写入配额）。
+ */
 export async function writeMetaBack(
   env: WorkerEnv,
   sourceId: string,
-  links: string[],
-  translated: TranslatedMeta[],
+  entries: { link: string; meta: TranslatedMeta }[],
   memory: Record<string, TranslatedMeta> | null,
   targetLang: string,
   ttl: number,
 ): Promise<Record<string, TranslatedMeta>> {
   const merged = memory ?? {};
-  for (let i = 0; i < translated.length; i++) {
-    const link = links[i];
-    if (!link) continue;
-    merged[urlHash(link)] = translated[i];
+  let changed = 0;
+  for (const e of entries) {
+    if (!e.link) continue;
+    merged[urlHash(e.link)] = e.meta;
+    changed++;
   }
-  await setRssMeta(env, sourceId, targetLang, merged, ttl);
+  if (changed > 0) {
+    await setRssMeta(env, sourceId, targetLang, merged, ttl);
+  }
   return merged;
 }
 

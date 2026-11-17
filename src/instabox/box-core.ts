@@ -128,10 +128,10 @@ export async function translateAndCacheRssOut(
   const items = parsed.channel.items;
   const memory = (await getRssMeta(env, source.id, targetLang)) ?? {};
 
-  // 纯 source (translate=false)：不翻译，只重写成品
+  // translate=false：不翻译，只组装成品
   if (!source.translate) {
     const outXml = assembleRssOut(source, parsed, null);
-    await setRssOutCache(env, source.id, targetLang, outXml, daysToSec(config.defaults?.rss_cache_ttl));
+    await writeIfChanged(env, source.id, targetLang, outXml, config);
     return 0;
   }
 
@@ -154,13 +154,46 @@ export async function translateAndCacheRssOut(
     });
   }
 
-  const links = items.map((i) => i.link ?? '');
-  const merged = await writeMetaBack(env, source.id, links, translated, memory, targetLang, daysToSec(config.defaults?.rss_cache_ttl));
+  // 用未缓存条目的原索引取 link，避免翻译写到错误的 urlHash 上
+  const entries = uncached.map((u, i) => ({
+    link: items[u.index]?.link ?? '',
+    meta: translated[i],
+  }));
+  const merged = await writeMetaBack(env, source.id, entries, memory, targetLang, daysToSec(config.defaults?.rss_cache_ttl));
 
   const outXml = assembleRssOut(source, parsed, merged);
-  await setRssOutCache(env, source.id, targetLang, outXml, daysToSec(config.defaults?.rss_cache_ttl));
-  logger.info(`RSS output cached & meta translated: ${source.id} (${uncached.length} new)`);
+  await writeIfChanged(env, source.id, targetLang, outXml, config);
+  if (uncached.length > 0) {
+    logger.info(`RSS output updated: ${source.id} (${uncached.length} new)`);
+  }
   return uncached.length;
+}
+
+/**
+ * 只在成品内容变化（或尚无缓存）时写 KV。
+ * 避免每轮无脑重写全部源——KV 免费计划仅 1000 写入/天，全量重写会直接打满。
+ */
+async function writeIfChanged(
+  env: WorkerEnv,
+  sourceId: string,
+  targetLang: string,
+  outXml: string,
+  config: RssConfig,
+): Promise<void> {
+  const logger = createLogger(env);
+  const existing = await getRssOutCache(env, sourceId, targetLang);
+  if (existing === outXml) {
+    logger.debug(`RSS output unchanged, skip write: ${sourceId}`);
+    return;
+  }
+  await setRssOutCache(
+    env,
+    sourceId,
+    targetLang,
+    outXml,
+    daysToSec(config.defaults?.rss_cache_ttl),
+  );
+  logger.info(`RSS output cached: ${sourceId}`);
 }
 
 async function fetchRssXml(url: string): Promise<string | null> {
@@ -223,6 +256,32 @@ export async function translateAndCacheArticle(
   } catch (e) {
     const err = e as Error;
     logger.warn(`Article async translate failed: ${err.message}`);
+  }
+}
+
+/** 仅格式化原文并写缓存（translate_body=false 的源，不调 LLM）。 */
+export async function formatAndCacheArticle(
+  env: WorkerEnv,
+  source: RssSource,
+  url: string,
+  config: RssConfig,
+): Promise<void> {
+  const logger = createLogger(env);
+  const targetLang = config.defaults?.target_lang ?? 'ZH';
+
+  const claimed = await tryMarkArticlePending(env, source.id, url, targetLang);
+  if (!claimed) {
+    logger.debug(`Article already pending/cached, skip: ${url}`);
+    return;
+  }
+
+  try {
+    const { html } = await fetchAndRenderPage(url, env, source.id);
+    await setArticleCache(env, source.id, url, targetLang, html, daysToSec(config.defaults?.article_cache_ttl));
+    logger.info(`Article formatted & cached: ${url}`);
+  } catch (e) {
+    const err = e as Error;
+    logger.warn(`Article format failed: ${err.message}`);
   }
 }
 
@@ -319,11 +378,12 @@ export async function runScheduled(
   const sourcesPerRun = config.defaults?.sources_per_run ?? DEFAULT_SOURCES_PER_RUN;
   const articlesPerSource = config.defaults?.articles_per_source ?? DEFAULT_ARTICLES_PER_SOURCE;
 
-  const translateSources = config.sources.filter((s) => sourceEnabled(s) && s.translate);
+  // enabled !== false 的源全部参与：translate=false 只是不调 LLM，仍要刷新成品
+  const activeSources = config.sources.filter(sourceEnabled);
   let processed = 0;
 
   if (opts.mode === 'meta' || opts.mode === 'full') {
-    for (const source of translateSources) {
+    for (const source of activeSources) {
       if (Date.now() > opts.deadline) break;
       if (await tryMarkRssPending(env, source.id, targetLang)) {
         processed += await translateAndCacheRssOut(env, source, config);
@@ -334,11 +394,11 @@ export async function runScheduled(
   if (opts.mode === 'articles' || opts.mode === 'full') {
     // round-robin：游标偏移选择起始源，处理 sourcesPerRun 个源 × articlesPerSource 篇
     const cursor = await readCursor(env);
-    const n = translateSources.length;
+    const n = activeSources.length;
     const windowSources: RssSource[] = [];
     if (n > 0) {
       for (let i = 0; i < n && windowSources.length < sourcesPerRun; i++) {
-        const src = translateSources[(cursor + i) % n];
+        const src = activeSources[(cursor + i) % n];
         windowSources.push(src);
       }
     }
@@ -348,6 +408,8 @@ export async function runScheduled(
       if (Date.now() > opts.deadline) { interrupted = true; break; }
       const parsed = await fetchRssParsed(source.url);
       if (!parsed) continue;
+      // translate_body=false：只格式化正文，不调 LLM
+      const needTranslateBody = source.translate_body !== false;
       let picked = 0;
       for (const item of parsed.channel.items) {
         if (Date.now() > opts.deadline) { interrupted = true; break; }
@@ -355,8 +417,12 @@ export async function runScheduled(
         if (!item.link) continue;
         const cached = await getArticleCache(env, source.id, item.link, targetLang);
         if (cached) continue;
-        // claim 权威只在 translateAndCacheArticle 内部发生一次（此处不 claim）
-        await translateAndCacheArticle(env, source, item.link, config);
+        // claim 权威只在 translateAndCacheArticle / formatAndCacheArticle 内部发生一次（此处不 claim）
+        if (needTranslateBody) {
+          await translateAndCacheArticle(env, source, item.link, config);
+        } else {
+          await formatAndCacheArticle(env, source, item.link, config);
+        }
         processed++;
         picked++;
       }
