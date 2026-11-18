@@ -56,8 +56,9 @@ const worker = {
   fetch: app.fetch,
   // [instabox] Cron 定时任务：每 10 分钟唤醒 box（mode=full）。
   // box 是唯一解析/翻译执行者，Worker 只做纯触发。
-  async scheduled(_controller: { waitUntil(p: Promise<unknown>): void }, env: WorkerEnv): Promise<void> {
-    _controller.waitUntil(wakeInstabox(env, 'full'));
+  async scheduled(_controller: ScheduledController, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+    // 纯触发器：唤醒不阻塞 cron 返回，转由 ctx.waitUntil 挂起后台执行
+    ctx.waitUntil(wakeInstabox(env, 'full'));
   },
 };
 
