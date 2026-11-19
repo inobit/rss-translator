@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   release:
+    # 本 workflow 只绑定 tag push；这层 guard 防止以后加了分支触发后误发布
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    env:
+      INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
+      INSTABOX_BOX: ${{ vars.INSTABOX_BOX || 'general' }}
+      BOX_DIR: /data/home/rss-translator
+      INSTABOX_NO_TELEMETRY: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -96,3 +103,34 @@ jobs:
         with:
           files: release/rss-box-server-*.tar.gz
           generate_release_notes: true
+
+      # 以下把同一次构建产物直接推到 box；.env 保留 box 上已有的，不覆盖
+      - name: Install instabox CLI
+        run: npm i -g instabox@0.8.306
+
+      - name: Wake box
+        # wake 只恢复自动暂停的 box；手动 stop 的用 start 兜底
+        run: instabox wake "$INSTABOX_BOX" || instabox start "$INSTABOX_BOX"
+
+      - name: Upload box bundle
+        run: |
+          tar -czf - dist-box Dockerfile docker-compose.yml \
+            | instabox exec "$INSTABOX_BOX" --stdin --env "BOX_DIR=$BOX_DIR" -- \
+              'mkdir -p "$BOX_DIR" && tar -xzf - -C "$BOX_DIR"'
+
+      - name: Restart box container
+        run: |
+          instabox exec "$INSTABOX_BOX" --env "BOX_DIR=$BOX_DIR" --timeout 600 -- \
+            'cd "$BOX_DIR" && docker compose up -d --build'
+
+      - name: Health check
+        run: |
+          for i in 1 2 3 4 5; do
+            if instabox exec "$INSTABOX_BOX" -- 'curl -fsS http://127.0.0.1:8788/health'; then
+              echo "box healthy"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "::error::box health check failed"
+          exit 1
