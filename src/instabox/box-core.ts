@@ -38,6 +38,7 @@ import {
   type TranslatedMeta,
 } from './helpers';
 import { createLogger } from '../utils/logger';
+import { mergeBySourceOrder, itemIdentity } from './merge-order';
 
 const DEFAULT_TTL_DAYS = 30;
 const DEFAULT_SOURCES_PER_RUN = 5;
@@ -513,7 +514,7 @@ export async function buildMergedRss(
   const titlePrefix = mergeCfg.title_prefix ?? '[{name}] ';
   const addCategory = mergeCfg.add_category ?? true;
 
-  const allItems: { item: Record<string, unknown>; pubDate: number }[] = [];
+  const mixEntries: { item: Record<string, unknown>; key: string; sourceId: string }[] = [];
   let firstLink = '';
   // 汇总各源成品的命名空间声明（media:/dc:/content:/atom: 等），
   // 否则带前缀元素在合并 XML 中会变成 unbound prefix，不符合 XML 规范
@@ -537,6 +538,8 @@ export async function buildMergedRss(
     const sourceLabel = source.title || source.name || source.id;
     for (const raw of parsed.channel.items) {
       const item = { ...(raw as unknown as Record<string, unknown>) };
+      // 在改写标题前取标识，避免翻译/前缀影响排序
+      const key = itemIdentity(item);
 
       // 标题前缀：让合并流里能一眼区分来源
       if (titlePrefix && typeof item.title === 'string') {
@@ -555,15 +558,14 @@ export async function buildMergedRss(
         }
       }
 
-      allItems.push({ item, pubDate: parsePubDate(item.pubDate) });
+      mixEntries.push({ item, key, sourceId: source.id });
     }
     logger.debug(`[merge] included ${source.id}: ${parsed.channel.items.length} items`);
   }
 
-  if (allItems.length === 0) return null;
-
-  // 按发布时间倒序（无 pubDate 的排到最后）
-  allItems.sort((a, b) => b.pubDate - a.pubDate);
+  // 以源自身顺序为基础混排：固定规则，不依赖发布时间
+  const orderedItems = mergeBySourceOrder(mixEntries);
+  if (orderedItems.length === 0) return null;
 
   const channelMeta: Record<string, unknown> = {
     title: mergeCfg.title ?? 'RSS Translator 综合',
@@ -580,12 +582,5 @@ export async function buildMergedRss(
     };
   }
 
-  return buildRssXml(channelMeta, allItems.map((x) => x.item), mergedAttrs);
-}
-
-/** 解析 RSS pubDate 为时间戳，失败返回 0（排序靠后） */
-function parsePubDate(value: unknown): number {
-  if (typeof value !== 'string') return 0;
-  const ts = Date.parse(value);
-  return Number.isNaN(ts) ? 0 : ts;
+  return buildRssXml(channelMeta, orderedItems, mergedAttrs);
 }
