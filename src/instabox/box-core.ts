@@ -39,6 +39,7 @@ import {
 } from './helpers';
 import { createLogger } from '../utils/logger';
 import { mergeBySourceOrder, itemIdentity } from './merge-order';
+import { getFeedArticleHtml } from './feed-content';
 
 const DEFAULT_TTL_DAYS = 30;
 const DEFAULT_SOURCES_PER_RUN = 5;
@@ -120,6 +121,8 @@ function assembleRssOut(
 
   const itemsOutput = channel.items.map((item) => {
     const output: Record<string, unknown> = { ...item };
+    // 全文 RSS 的正文只在内部用于 /raw 提取，不写回成品 feed（否则体积暴涨）
+    delete output.content;
     const hash = urlHash(item.link ?? '');
     const hit = merged ? (merged as Record<string, TranslatedMeta>)[hash] : undefined;
     if (hit && 'title' in hit) {
@@ -276,6 +279,7 @@ export async function translateAndCacheArticle(
   const llmProvider = primary?.type === 'llm' ? primary.config : undefined;
   const deeplxProvider = primary?.type === 'deeplx' ? primary.config : undefined;
   const cloudflareProvider = primary?.type === 'cloudflare' ? primary.config : undefined;
+  const preloadedHtml = await getFeedArticleHtml(source, url);
 
   try {
     const html = await fetchAndTranslatePage(
@@ -289,6 +293,7 @@ export async function translateAndCacheArticle(
       config.defaults?.max_input_tokens,
       config.defaults?.request_interval_ms,
       fallbacks.length > 0 ? fallbacks : undefined,
+      preloadedHtml,
     );
     await setArticleCache(env, source.id, url, targetLang, html, daysToSec(config.defaults?.article_cache_ttl));
     logger.info(`Article translated & cached: ${url}`);
@@ -315,7 +320,8 @@ export async function formatAndCacheArticle(
   }
 
   try {
-    const { html } = await fetchAndRenderPage(url, env, source.id);
+    const preloadedHtml = await getFeedArticleHtml(source, url);
+    const { html } = await fetchAndRenderPage(url, env, source.id, preloadedHtml);
     await setArticleCache(env, source.id, url, targetLang, html, daysToSec(config.defaults?.article_cache_ttl));
     logger.info(`Article formatted & cached: ${url}`);
   } catch (e) {
@@ -372,12 +378,14 @@ export async function getOrBuildArticleHtml(
   const claimed = await tryMarkArticlePending(env, source.id, url, targetLang);
   if (!claimed) {
     // 未 claim 成功仍应现场渲染返回原文，只是不启动后台补译
-    const { html: rendered } = await fetchAndRenderPage(url, env, sourceId);
+    const preloadedHtml = await getFeedArticleHtml(source, url);
+    const { html: rendered } = await fetchAndRenderPage(url, env, sourceId, preloadedHtml);
     return rendered;
   }
 
   // claim 成功：渲染（若 render 失败借助 PENDING_TTL 60s 自动失效，循环有兜底）
-  const { html } = await fetchAndRenderPage(url, env, sourceId);
+  const preloadedHtml = await getFeedArticleHtml(source, url);
+  const { html } = await fetchAndRenderPage(url, env, sourceId, preloadedHtml);
 
   // 后台写成品：translate_body !== false 才翻译正文；false 直接用已渲染结果写缓存
   if (source.translate_body !== false) {

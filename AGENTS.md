@@ -175,6 +175,7 @@ key  = "cache:article:v1:a3f2b1c0:ZH"
 | `sources[].domains` | 文章域名白名单，为空则不限制 |
 | `sources[].translate_body` | 是否翻译正文并重写 `<link>` 为代理 URL |
 | `sources[].engines` | 翻译 provider 名称数组，按顺序尝试，失败自动流转到下一个 |
+| `sources[].fulltext_from_feed` | 正文取 feed 的 `content:encoded`（全文 RSS 镜像源），不抓原站；用于 reuters-* 等反爬站点 |
 | `sources[].engine` | **已废弃**，请使用 `engines` 数组 |
 | `providers.{name}.type` | `"deeplx"` / `"cloudflare"` / `"llm"`（默认），决定调用哪种 API |
 | `providers.{name}.model` | 模型名，LLM 类型必填；`type: cloudflare` 时模型已在 URL 中可留空 |

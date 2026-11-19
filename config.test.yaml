@@ -159,3 +159,33 @@ sources:
       - paper.people.com.cn
     translate: false
     translate_body: false
+
+  - id: reuters-latest
+    name: Reuters Latest
+    url: https://feed.quanwenrss.com/feed/reuters-latest.xml
+    title: 路透社 最新
+    domains:
+      - reuters.com
+    translate: true
+    translate_body: true
+    fulltext_from_feed: true
+
+  - id: reuters-world
+    name: Reuters World
+    url: https://feed.quanwenrss.com/feed/reuters-world.xml
+    title: 路透社 国际
+    domains:
+      - reuters.com
+    translate: true
+    translate_body: true
+    fulltext_from_feed: true
+
+  - id: reuters-business
+    name: Reuters Business
+    url: https://feed.quanwenrss.com/feed/reuters-business.xml
+    title: 路透社 商业
+    domains:
+      - reuters.com
+    translate: true
+    translate_body: true
+    fulltext_from_feed: true

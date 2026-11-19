@@ -62,6 +62,11 @@ export interface RssSource {
   engines?: TranslateEngine[];
   /** RSS channel 的 logo 图片 URL，设置后将替换（或添加）channel 级别的 <image> 元素 */
   logo?: string;
+  /**
+   * 正文本身就在 RSS 的 content:encoded 里（如全文 RSS 镜像站）。
+   * 开启后不再抓取原站文章页，直接从 feed 取正文，避免原站反爬。
+   */
+  fulltext_from_feed?: boolean;
 }
 
 /** KV 中存储的全局配置 */

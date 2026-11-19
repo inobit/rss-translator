@@ -129,6 +129,7 @@ sources:
 | `sources[].translate_body` | 翻译正文并将 `<link>` 改写为 `/raw` 代理 URL |
 | `sources[].domains` | 文章域名白名单，为空不限制 |
 | `sources[].engines` | 覆盖 `defaults.engines` |
+| `sources[].fulltext_from_feed` | 正文来自 feed 的 `content:encoded`（全文 RSS 镜像源），不再抓原站页面 |
 | `providers.{name}.type` | `"llm"`（默认）/ `"deeplx"` / `"cloudflare"` |
 | `providers.{name}.api_key_name` | 指定 secret 名，默认 `{NAME}_API_KEY` |
 

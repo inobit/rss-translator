@@ -516,6 +516,90 @@ function bbcExtract($: ReturnType<typeof cheerio.load>): ArticleData {
 }
 
 
+// ================ Reuters（全文 RSS 镜像）提取器 ================
+
+/**
+ * 从 quanwenrss 的 content:encoded 里提取正文。
+ * 原站 reuters.com 有反爬，正文直接取自 feed；结构为 h1/h2/署名/时间/figure/段落/hr+推广链接。
+ */
+function reutersExtract($: ReturnType<typeof cheerio.load>, _rawHtml?: string): ArticleData {
+  const $root: cheerio.Cheerio<any> = $('body').length ? $('body') : $.root();
+
+  const title = $root.children('h1').first().text().trim() || fallbackTitle($);
+  $root.children('h1').first().remove();
+
+  let summary: string | undefined;
+  const $subtitle = $root.children('h2').first();
+  if ($subtitle.length) {
+    summary = $subtitle.text().trim() || undefined;
+    $subtitle.remove();
+  }
+
+  let author: string | undefined;
+  let date: string | undefined;
+  let credits: string | undefined;
+  $root.children('p').each((_i, el) => {
+    const $p = $(el);
+    const text = $p.text().trim();
+    if (!author && /^By\s+\S/i.test(text)) {
+      author = text.replace(/^By\s+/i, '');
+      $p.remove();
+    } else if (!date && /^Published:\s*\S/i.test(text)) {
+      date = text.replace(/^Published:\s*/i, '');
+      $p.remove();
+    } else if (!credits && /^(Reporting|Writing|Editing)\s+by\b/i.test(text)) {
+      // 记者/编辑署名属于正文元信息，保留在末尾的小字区
+      credits = text;
+      $p.remove();
+    }
+  });
+
+  // 去掉分隔线与「Read the original article」推广链接（正文内其他引用链接保留）
+  $root.children('hr').remove();
+  $root.find('a').filter((_i, el) => /read the original/i.test($(el).text())).parent().remove();
+
+  const linksCollector: ArticleLinkMeta[] = [];
+  const images: ArticleImage[] = [];
+  const paragraphs: string[] = [];
+  const blocks: ContentBlock[] = [];
+
+  // 严格按 DOM 顺序遍历，保证图片与正文的相对位置不丢
+  $root.children().each((_i, el) => {
+    const tag = (el as { name?: string }).name?.toLowerCase() ?? '';
+    if (tag === 'figure' || tag === 'picture' || tag === 'img') {
+      const img = extractImageFromContainer($(el));
+      if (img) {
+        // figcaption 是图片说明（含图片署名），渲染时作为 <figcaption> 小字保留
+        const caption = $(el).find('figcaption').first().text().trim();
+        if (caption && !/^TOPIC:/i.test(caption)) img.alt = caption;
+        else if (/^TOPIC:/i.test(img.alt)) img.alt = '';
+        images.push(img);
+        blocks.push({ type: 'image', image: img });
+      }
+      return;
+    }
+    if (tag === 'p' || tag === 'h2' || tag === 'h3' || tag === 'blockquote' || tag === 'li') {
+      const text = extractHtmlText($(el), $, linksCollector);
+      if (!text || /^TOPIC:/i.test(text)) return;
+      if (tag === 'h2' || tag === 'h3') {
+        blocks.push({ type: 'heading', text });
+      } else {
+        paragraphs.push(text);
+        blocks.push({ type: 'text', texts: [text] });
+      }
+    }
+  });
+
+  if (credits) blocks.push({ type: 'disclaimer', text: credits });
+
+  return {
+    title, author, date, summary,
+    images, paragraphs, blocks,
+    links: linksCollector.length > 0 ? linksCollector : undefined,
+  };
+}
+
+
 // ================ SciAm 提取器 ================
 
 /** 从 JSON-LD author/editor 字段提取名称，兼容单对象和数组格式 */
@@ -1816,6 +1900,9 @@ const SOURCE_EXTRACTORS: Record<string, SourceExtractor> = {
   'theregister-ai': { extract: registerExtract },
   'tds': { extract: tdsExtract },
   'simonw': { extract: simonwExtract },
+  'reuters-latest': { extract: reutersExtract },
+  'reuters-world': { extract: reutersExtract },
+  'reuters-business': { extract: reutersExtract },
   'news-cn': { extract: newsCnExtract },
   'people-daily': { extract: peopleDailyExtract },
 };
@@ -2085,16 +2172,20 @@ export async function fetchAndTranslatePage(
   maxInputTokens?: number,
   batchDelayMs?: number,
   fallbackProviders?: ResolvedProvider[],
+  preloadedHtml?: string,
 ): Promise<string> {
   const logger = createLogger(env);
 
-  logger.info(`Fetching article: ${url}`);
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-  });
-  if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+  let html = preloadedHtml;
+  if (!html) {
+    logger.info(`Fetching article: ${url}`);
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+    });
+    if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+    html = await resp.text();
+  }
 
-  const html = await resp.text();
   const article = await extractArticle(html, sourceId);
   logger.info(`Extracted: title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
 
@@ -2114,16 +2205,20 @@ export async function fetchAndRenderPage(
   url: string,
   env: WorkerEnv,
   sourceId?: string,
+  preloadedHtml?: string,
 ): Promise<{ html: string; article: ArticleData }> {
   const logger = createLogger(env);
 
-  logger.info(`Fetching article (no translate): ${url}`);
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-  });
-  if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+  let html = preloadedHtml;
+  if (!html) {
+    logger.info(`Fetching article (no translate): ${url}`);
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+    });
+    if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+    html = await resp.text();
+  }
 
-  const html = await resp.text();
   const article = await extractArticle(html, sourceId);
   logger.info(`Extracted (no translate): title="${article.title.slice(0, 60)}", imgs=${article.images.length}, paras=${article.paragraphs.length}`);
 
@@ -2137,14 +2232,18 @@ export async function fetchAndExtractContent(
   url: string,
   env: WorkerEnv,
   sourceId?: string,
+  preloadedHtml?: string,
 ): Promise<{ title: string; content: string }> {
   const logger = createLogger(env);
-  const resp = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
-  });
-  if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+  let html = preloadedHtml;
+  if (!html) {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.7827.199 Safari/537.36' },
+    });
+    if (!resp.ok) throw new Error(`Failed to fetch article: ${resp.status}`);
+    html = await resp.text();
+  }
 
-  const html = await resp.text();
   const article = await extractArticle(html, sourceId);
   // 合并所有可读文本（段落、引文、代码块），代码块用 [代码] 标记包裹
   const parts: string[] = [];

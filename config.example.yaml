@@ -70,3 +70,14 @@ sources:
       - bbc.com
     translate: true
     translate_body: true
+
+  # 全文 RSS 源：正文在 feed 的 content:encoded 里，开启后不再抓原站
+  - id: reuters-latest
+    name: Reuters Latest
+    url: https://feed.quanwenrss.com/feed/reuters-latest.xml
+    title: 路透社 最新
+    domains:
+      - reuters.com
+    translate: true
+    translate_body: true
+    fulltext_from_feed: true

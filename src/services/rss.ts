@@ -206,8 +206,13 @@ function normalizeItem(raw: ParsedRssItem): ParsedRssItem {
     description: raw.description ?? '',
     link: raw.link ?? '',
   };
-  // 统一移除 content:encoded，所有正文通过 /raw 代理获取译文
+  // 正文统一走 /raw 代理；但全文 RSS 源需要保留 content:encoded 作为正文来源（不会写回成品 XML）
+  const rawContent = raw['content:encoded'] ?? raw.content;
+  const fullText = typeof rawContent === 'string'
+    ? rawContent
+    : (rawContent as Record<string, unknown> | undefined)?.__cdata
+      ?? (rawContent as Record<string, unknown> | undefined)?.['#text'];
+  if (typeof fullText === 'string' && fullText) item.content = fullText;
   delete item['content:encoded'];
-  delete item.content;
   return item;
 }
