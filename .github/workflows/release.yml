@@ -4,14 +4,16 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+*'
+  # 手动触发仅用于重新部署，不创建 Release
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   release:
-    # 本 workflow 只绑定 tag push；这层 guard 防止以后加了分支触发后误发布
-    if: startsWith(github.ref, 'refs/tags/v')
+    # tag push = 发布 + 部署；手动触发 = 仅部署当前分支的构建产物
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     env:
       INSTABOX_API_KEY: ${{ secrets.INSTABOX_API_KEY }}
@@ -34,6 +36,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate version consistency
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_VERSION=${GITHUB_REF#refs/tags/v}
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -47,6 +50,7 @@ jobs:
         run: pnpm build:box
 
       - name: Create release package
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           mkdir -p release/rss-box-server
           cp -r dist-box release/rss-box-server/
@@ -99,6 +103,7 @@ jobs:
           tar -czf rss-box-server-${GITHUB_REF_NAME}.tar.gz rss-box-server
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: release/rss-box-server-*.tar.gz
