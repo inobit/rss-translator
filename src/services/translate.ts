@@ -28,6 +28,8 @@ export interface TranslateOptions {
   maxInputTokens?: number;
   /** 分批间延迟（毫秒），仅 cron 传入，在线请求不延迟 */
   batchDelayMs?: number;
+  /** 单批最多文本数；元信息等短文本批量过大时限制它，避免响应截断 */
+  maxBatchItems?: number;
 }
 
 /** 根据 engine 名称和配置解析 provider */
@@ -205,7 +207,10 @@ async function translateTextsInternal(opts: TranslateOptions): Promise<string[]>
 
   for (const text of pendingTexts) {
     const tokens = estimateTokens(text);
-    if (currentBatch.length > 0 && currentTokens + tokens > maxTokens) {
+    if (currentBatch.length > 0 && (
+      currentTokens + tokens > maxTokens
+      || currentBatch.length >= (opts.maxBatchItems ?? Infinity)
+    )) {
       batches.push(currentBatch);
       currentBatch = [];
       currentTokens = 0;
@@ -226,8 +231,18 @@ async function translateTextsInternal(opts: TranslateOptions): Promise<string[]>
     if (i > 0 && opts.batchDelayMs && opts.batchDelayMs > 0) {
       await sleep(opts.batchDelayMs);
     }
-    const results = await translateViaLlm(batches[i], targetLang, prompt, opts.llm);
-    allResults.push(...results);
+    let results: string[] | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        results = await translateViaLlm(batches[i], targetLang, prompt, opts.llm);
+        break;
+      } catch (e) {
+        if (attempt === 1) throw e;
+        logger.warn(`Batch ${i + 1} failed, retrying once: ${(e as Error).message}`);
+        await sleep(1000);
+      }
+    }
+    allResults.push(...(results ?? batches[i]));
   }
 
   const result = mapResults(texts, allResults);

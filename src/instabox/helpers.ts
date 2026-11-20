@@ -101,6 +101,8 @@ export async function translateMetaTexts(
       fallbackProviders: fallbacks.length > 0 ? fallbacks : undefined,
       maxInputTokens: config.max_input_tokens,
       batchDelayMs: config.request_interval_ms,
+      // 元信息是短文本：一次塞几百条容易触发响应截断/超时，限制单批条数
+      maxBatchItems: 60,
     });
   } catch (e) {
     const err = e as Error;
