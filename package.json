@@ -1,6 +1,6 @@
 {
   "name": "rss-translator",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "packageManager": "pnpm@10.26.1",
   "description": "RSS 订阅翻译代理 — Cloudflare Worker + instabox box",
   "type": "module",
