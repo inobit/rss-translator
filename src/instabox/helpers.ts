@@ -109,6 +109,13 @@ export async function translateMetaTexts(
     // 失败时返回空结果：writeMetaBack 会跳过空条目，让下一轮重试，
     // 避免把原文当成译文写进 30 天缓存后永远不再翻译
     logger.warn(`Meta translation failed: ${err.message}, leaving entries uncached for retry`);
+    try {
+      await env.RSS_CACHE.put(
+        `debug:meta-error:${source.id}`,
+        `${new Date().toISOString()} ${err.message}`.slice(0, 800),
+        { expirationTtl: 3600 },
+      );
+    } catch { /* 调试键写失败不影响主流程 */ }
     return uncached.map(() => ({ title: '', description: '' }));
   }
 
