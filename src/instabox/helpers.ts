@@ -104,14 +104,24 @@ export async function translateMetaTexts(
     });
   } catch (e) {
     const err = e as Error;
-    logger.warn(`Meta translation failed: ${err.message}, keeping originals`);
-    return uncached.map((u) => ({ title: u.title, description: u.description }));
+    // 失败时返回空结果：writeMetaBack 会跳过空条目，让下一轮重试，
+    // 避免把原文当成译文写进 30 天缓存后永远不再翻译
+    logger.warn(`Meta translation failed: ${err.message}, leaving entries uncached for retry`);
+    return uncached.map(() => ({ title: '', description: '' }));
   }
 
   return uncached.map((u, i) => {
-    const title = results[i * 2] || u.title;
-    const description = results[i * 2 + 1] || u.description || '';
-    return { title, description };
+    const title = results[i * 2] || '';
+    const description = results[i * 2 + 1] || '';
+    // translateTexts 对缺失结果会回填原文；原文==译文说明这一段实际没翻出来，
+    // 同样不写缓存，留给下一轮重试
+    if (title === u.title && description === u.description) {
+      return { title: '', description: '' };
+    }
+    return {
+      title: title || u.title,
+      description: description || u.description || '',
+    };
   });
 }
 
@@ -135,6 +145,8 @@ export async function writeMetaBack(
   let changed = 0;
   for (const e of entries) {
     if (!e.link) continue;
+    // 翻译失败/未完成的空结果不写入记忆表，下一轮还能重试
+    if (!e.meta.title && !e.meta.description) continue;
     merged[urlHash(e.link)] = e.meta;
     changed++;
   }
