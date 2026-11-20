@@ -25,6 +25,8 @@ export interface LlmProviderConfig {
   model: string;
   apiKey: string;
   maxInputTokens?: number;
+  /** 是否使用 OpenAI 兼容流式响应，默认开启；设为 false 回退到普通 JSON */
+  stream?: boolean;
 }
 
 /** Cloudflare provider 解析后的配置 */

@@ -379,6 +379,7 @@ async function translateViaLlm(
     ? `请将以下内容翻译为${targetLang}，直接返回翻译结果，不要添加任何前缀或说明：\n\n${texts[0]}`
     : `${texts.map((t, i) => `[${i + 1}] ${t}`).join('\n\n')}\n\n请将以上各段分别翻译为${targetLang}，保持编号格式 [1] [2] ... 返回。`;
 
+  const stream = provider.stream !== false;
   const requestBody: Record<string, unknown> = {
     messages: [
       { role: 'system', content: systemPrompt },
@@ -386,6 +387,7 @@ async function translateViaLlm(
     ],
     temperature: 0.3,
     max_tokens: 32768,
+    stream,
   };
   if (provider.model) {
     requestBody.model = provider.model;
@@ -406,14 +408,19 @@ async function translateViaLlm(
     throw new Error(`LLM translation failed: ${resp.status} ${body}`);
   }
 
-  const data = (await resp.json()) as LlmResponse;
-  const content = data.choices?.[0]?.message?.content;
+  let content: string;
+  if (stream) {
+    if (!resp.body) throw new Error('LLM streaming response has no body');
+    content = await readStreamContent(resp.body);
+  } else {
+    const data = (await resp.json()) as LlmResponse;
+    content = data.choices?.[0]?.message?.content ?? '';
+    if (data.choices?.[0]?.finish_reason === 'length') {
+      console.warn('LLM response truncated (length limit)');
+    }
+  }
   if (!content) {
     throw new Error('Unexpected LLM response format');
-  }
-
-  if (data.choices?.[0]?.finish_reason === 'length') {
-    console.warn('LLM response truncated (length limit)');
   }
 
   if (isSingle) {
@@ -421,6 +428,53 @@ async function translateViaLlm(
   }
 
   return parseLlmResult(content, texts.length);
+}
+
+/**
+ * 读取 OpenAI 兼容 SSE 流，把 delta.content 拼成完整文本。
+ * 若服务端忽略 stream 参数仍返回普通 JSON，则回退读取 message.content。
+ */
+async function readStreamContent(body: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let chunkText = '';
+  let firstPayload = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx = buffer.indexOf('\n');
+    while (idx >= 0) {
+      const line = buffer.slice(0, idx).replace(/\r$/, '');
+      buffer = buffer.slice(idx + 1);
+      idx = buffer.indexOf('\n');
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      if (!firstPayload) firstPayload = data;
+      try {
+        const parsed = JSON.parse(data) as {
+          choices?: Array<{ delta?: { content?: string }; message?: { content?: string } }>;
+        };
+        const delta = parsed.choices?.[0]?.delta?.content;
+        if (typeof delta === 'string') chunkText += delta;
+      } catch { /* 忽略非 JSON 的心跳行 */ }
+    }
+  }
+
+  if (chunkText) return chunkText;
+  if (firstPayload) {
+    try {
+      const parsed = JSON.parse(firstPayload) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const message = parsed.choices?.[0]?.message?.content;
+      if (typeof message === 'string') return message;
+    } catch { /* 上面已按 SSE 解析失败 */ }
+  }
+  return '';
 }
 
 function parseLlmResult(content: string, expectedCount: number): string[] {
