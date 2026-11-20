@@ -1983,16 +1983,20 @@ export async function translateArticle(opts: ArticleTranslateOptions): Promise<A
 
   if (toTranslate.length === 0) return article;
 
-  let translated: string[];
-  try {
-    translated = await translateTexts({
-      engine, texts: toTranslate, targetLang: 'ZH',
-      sourceLang: 'EN', env, llm, deeplx, cloudflare,
-      maxInputTokens,
-      batchDelayMs,
-      fallbackProviders,
-    });
-  } catch { return article; }
+  // 翻译失败不在这里吞掉：调用方才不会把原文 HTML 写进正文缓存，
+  // 在线 /raw 仍会返回已渲染的原文，下一轮可重试
+  const translated = await translateTexts({
+    engine, texts: toTranslate, targetLang: 'ZH',
+    sourceLang: 'EN', env, llm, deeplx, cloudflare,
+    maxInputTokens,
+    batchDelayMs,
+    fallbackProviders,
+  });
+  // translateTexts 对缺失结果会回填原文；整篇都没译出来时同样视为失败
+  if (translated.length === toTranslate.length
+    && translated.every((t, i) => t === toTranslate[i])) {
+    throw new Error('Article translation returned originals');
+  }
 
   let idx = 0;
 
